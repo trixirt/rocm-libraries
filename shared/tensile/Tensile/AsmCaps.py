@@ -944,7 +944,7 @@ def getCapabilitiesCache(rocmVersion: NamedTuple) -> dict:
                   'MaxVmcnt': 63,
                   'SupportedISA': True,
                   'SupportedSource': True,
-                  'VOP3v_dot4_i32_i8': False,
+                  'VOP3v_dot4_i32_i8': True,
                   'v_dot2_f32_f16': True,
                   'v_dot2c_f32_f16': True,
                   'v_dot4_i32_i8': False,
