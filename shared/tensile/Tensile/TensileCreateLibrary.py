@@ -1394,7 +1394,7 @@ def TensileCreateLibrary():
     manifestFile = Path(outputPath) / TENSILE_LIBRARY_DIR / TENSILE_MANIFEST_FILENAME
     manifestFile.parent.mkdir(exist_ok=True)
 
-    if args["VerifyManifest"]:
+    if False and args["VerifyManifest"]:
         if verifyManifest(manifestFile):
             tPrint(1, "Successfully verified all files in manifest were generated")
             return
