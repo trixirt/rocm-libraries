@@ -2140,7 +2140,7 @@ def GetAsmCaps(isaVersion: IsaVersion, hipVersion: SemanticVersion, cachedAsmCap
         exitFlag = True
       if exitFlag:
         printWarning("Cached asm caps differ from derived asm caps for {}".format(isaVersion))
-        printDiff(derivedAsmCaps, cachedAsmCaps[isaVersion])
+        PrintDiff(derivedAsmCaps, cachedAsmCaps[isaVersion])
     return derivedAsmCaps
   else:
     printWarning("Assembler not present, asm caps loaded from cache are unverified")
