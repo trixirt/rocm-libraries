@@ -795,6 +795,7 @@ namespace
             std::string specific_processor = rocblas_internal_get_arch_name(deviceId);
 	    std::string generic_processor = rocblas_internal_get_generic_arch_name(deviceId);
 	    std::string processors[2] = {specific_processor, generic_processor};
+	    std::string processor;
 
             static std::string base_path;
             static int         determined_path = determine_tensile_base_path(base_path);
@@ -803,7 +804,7 @@ namespace
             // Only call rocblas_abort on the final processor
             for(int i = 0; i < 2; ++i)
             {
-                std::string processor = processors[i];
+	        processor = processors[i];
                 path = base_path;
                 if(TestPath(path + "/" + processor))
                     path += "/" + processor;
