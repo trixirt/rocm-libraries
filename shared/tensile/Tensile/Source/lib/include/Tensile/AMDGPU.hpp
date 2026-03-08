@@ -82,8 +82,12 @@ namespace Tensile
             gfx1153 = 1153,
             gfx1200 = 1200,
             gfx1201 = 1201,
+	    gfx9_0_generic = -900,
+	    gfx9_4_generic = -940,
+	    gfx10_1_generic = -1010,
 	    gfx10_3_generic = -1030,
 	    gfx11_generic = -1100,
+	    gfx12_generic = -1200,
         };
 
         static std::string toString(Processor p)
@@ -144,10 +148,18 @@ namespace Tensile
                 return "gfx1200";
             case AMDGPU::Processor::gfx1201:
                 return "gfx1201";
+	    case AMDGPU::Processor::gfx9_0_generic:
+                return "gfx9-0-generic";
+	    case AMDGPU::Processor::gfx9_4_generic:
+                return "gfx9-4-generic";
+	    case AMDGPU::Processor::gfx10_1_generic:
+                return "gfx10-1-generic";
 	    case AMDGPU::Processor::gfx10_3_generic:
                 return "gfx10-3-generic";
 	    case AMDGPU::Processor::gfx11_generic:
                 return "gfx11-generic";
+	    case AMDGPU::Processor::gfx12_generic:
+                return "gfx12-generic";
             }
             return "";
         }

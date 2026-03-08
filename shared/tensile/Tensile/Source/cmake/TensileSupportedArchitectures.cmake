@@ -35,21 +35,23 @@ if(NOT BUILD_ADDRESS_SANITIZER)
         "gfx906"
         "gfx908"
         "gfx90a"
+	"gfx9-0-generic"
         "gfx942"
+	"gfx9-4-generic"
         "gfx950"
         "gfx1010"
         "gfx1011"
         "gfx1012"
+	"gfx10-11-generic"
         "gfx1030"
-        "gfx10-3-generic"
         "gfx1031"
         "gfx1032"
         "gfx1033"
         "gfx1034"
         "gfx1035"
         "gfx1036"
+        "gfx10-3-generic"
         "gfx1100"
-        "gfx11-generic"
         "gfx1101"
         "gfx1102"
         "gfx1103"
@@ -57,8 +59,11 @@ if(NOT BUILD_ADDRESS_SANITIZER)
         "gfx1151"
         "gfx1152"
         "gfx1153"
+        "gfx11-generic"
         "gfx1200"
-        "gfx1201")
+        "gfx1201"
+	"gfx12-generic"
+      )
 
     set(SUPPORTED_ARCHITECTURES ${BASE_ARCHITECTURES})
     list(APPEND SUPPORTED_ARCHITECTURES
