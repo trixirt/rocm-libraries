@@ -246,7 +246,7 @@ globalParameters["NumMergedFiles"] = 1            # The number of files that ker
 
 globalParameters["MaxFileName"] = 64              # If a file name would be longer than this, shorten it with a hash.
 globalParameters["SupportedISA"] = [(8,0,3),
-                                    (9,0,0), (9,0,6), (9,0,8), (9,0,10), (9,0,-1)
+                                    (9,0,0), (9,0,6), (9,0,8), (9,0,10), (9,0,-1),
                                     (9,4,2), (9,4,-1), (9,5,0),
                                     (10,1,0), (10,1,1), (10,1,2), (10,1,-1), (10,3,0), (10,3,1), (10,3,2), (10,3,3), (10,3,4), (10,3,5), (10,3,6), (10,3,-1),
                                     (11,0,0), (11,0,1), (11,0,2), (11,0,3), (11,0,-1),
@@ -2497,7 +2497,7 @@ def assignGlobalParameters( config, capabilitiesCache: Optional[dict] = None ):
     if os.name == "nt":
       globalParameters["CurrentISA"] = (9,0,6)
       printWarning("Failed to detect ISA so forcing (gfx906) on windows")
-  isasWithDisabledHWMonitor = ((9,0,-1), (9,4,2), (9,4,-1), (9,5,0), (10,1,-1) (10,3,-1), (11,0,0), (11,0,1), (11,0,2), (11,0,3), (11,5,0), (11,5,1), (11,5,2), (11,5,3), (11,0,-1), (12,0,0), (12,0,1), (12,0,-1))
+  isasWithDisabledHWMonitor = ((9,0,-1), (9,4,2), (9,4,-1), (9,5,0), (10,1,-1), (10,3,-1), (11,0,0), (11,0,1), (11,0,2), (11,0,3), (11,5,0), (11,5,1), (11,5,2), (11,5,3), (11,0,-1), (12,0,0), (12,0,1), (12,0,-1))
   if globalParameters["CurrentISA"] in isasWithDisabledHWMonitor:
     isaString = ', '.join(map(gfxName, isasWithDisabledHWMonitor))
     printWarning(f"HardwareMonitor currently disabled for {isaString}")
