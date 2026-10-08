@@ -31,7 +31,7 @@
 #include <new>
 #include <type_traits>
 
-constexpr int c_YZ_grid_launch_limit = 1 << 16; // on some gfx
+constexpr int c_YZ_grid_launch_limit = (1 << 16) - 1; // on some gfx
 
 #pragma STDC CX_LIMITED_RANGE ON
 
@@ -800,11 +800,17 @@ bool rocblas_internal_tensile_supports_ldc_ne_ldd(rocblas_handle handle);
 // We assume true if the value is between 942 to 1000
 ROCBLAS_INTERNAL_EXPORT bool rocblas_internal_tensile_supports_xdl_math_op(rocblas_math_mode mode);
 
+// for internal use
+std::string rocblas_internal_get_arch_name(int device);
+
 // for internal use during testing, fetch arch name
 ROCBLAS_INTERNAL_EXPORT std::string rocblas_internal_get_arch_name();
 
 // for internal use, fetch xnack mode
 std::string rocblas_internal_get_xnack_mode();
+
+// for internal use, whether the device revision requires the strict library
+bool rocblas_internal_is_strict_target(int device);
 
 // for internal use during testing, whether to skip actual kernel launch
 ROCBLAS_INTERNAL_EXPORT bool rocblas_internal_tensile_debug_skip_launch();

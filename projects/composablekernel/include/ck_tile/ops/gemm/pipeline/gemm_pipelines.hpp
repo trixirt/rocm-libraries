@@ -1,5 +1,5 @@
-// Copyright © Advanced Micro Devices, Inc., or its affiliates.
-// SPDX-License-Identifier:  MIT
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// SPDX-License-Identifier: MIT
 
 #pragma once
 
@@ -15,7 +15,16 @@ enum struct GemmPipeline
     MEMORY,
     BASIC_V1,
     BASIC_V2,
-    PRESHUFFLE_V2
+    PRESHUFFLE_V2,
+    BASIC_ASYNC_V1,
+    COMPUTE_TDM_V1,
+    COMPUTE_TDM_V2,
+    COMPUTE_ASYNC_V2,
+    PRESHUFFLE_FLATMM,
+    PRESHUFFLE_TDM,
+    PRESHUFFLE_MX_TDM,
+    COMPUTE_MX_TDM,
+    WAVELET
 };
 
 } // namespace ck_tile

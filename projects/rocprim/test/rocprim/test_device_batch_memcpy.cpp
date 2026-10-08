@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2024-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2024-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -30,6 +30,7 @@
 #include "test_utils_assertions.hpp"
 #include "test_utils_custom_test_types.hpp"
 #include "test_utils_data_generation.hpp"
+#include "test_utils_types.hpp"
 
 #include <rocprim/detail/various.hpp>
 #include <rocprim/device/device_copy.hpp>
@@ -130,7 +131,38 @@ using RocprimDeviceBatchMemcpyTestsParams = ::testing::Types<
     // Test iterator input for BatchCopy
     DeviceBatchMemcpyParams<unsigned int, unsigned int, false, false, 1024, 1024 * 4, true>>;
 
-TYPED_TEST_SUITE(RocprimDeviceBatchMemcpyTests, RocprimDeviceBatchMemcpyTestsParams);
+struct RocprimDeviceBatchMemcpyTestsNameGenerator
+{
+    template<class T>
+    static std::string type_tag_or_custom()
+    {
+        if constexpr(std::is_same_v<T, test_utils::custom_non_copyable_type<uint8_t>>)
+            return "NonCopyable";
+        else if constexpr(std::is_same_v<T, test_utils::custom_non_moveable_type<uint8_t>>)
+            return "NonMoveable";
+        else if constexpr(std::is_same_v<T, test_utils::custom_non_default_type<uint8_t>>)
+            return "NonDefault";
+        else
+            return type_tag<T>();
+    }
+
+    template<class Params>
+    static std::string GetName(int /*index*/)
+    {
+        std::string n = type_tag_or_custom<typename Params::value_type>() + "_"
+                        + type_tag<typename Params::size_type>()
+                        + (Params::isMemCpy ? "_Memcpy" : "_Copy")
+                        + (Params::shuffled ? "_Shuffled" : "") + "_b"
+                        + std::to_string(Params::num_buffers) + "_m"
+                        + std::to_string(Params::max_size);
+        if constexpr(Params::use_indirect_iterator) n += "_Indirect";
+        return n;
+    }
+};
+
+TYPED_TEST_SUITE(RocprimDeviceBatchMemcpyTests,
+                 RocprimDeviceBatchMemcpyTestsParams,
+                 RocprimDeviceBatchMemcpyTestsNameGenerator);
 
 template<bool IsMemCpy,
          class InputBufferItType,
@@ -256,15 +288,20 @@ TYPED_TEST(RocprimDeviceBatchMemcpyTests, SizeAndTypeVariation)
     constexpr bool use_indirect_iterator = TestFixture::use_indirect_iterator;
     constexpr bool debug_synchronous     = TestFixture::debug_synchronous;
 
-    using config = rocprim::detail::
-        wrapped_batch_memcpy_config<rocprim::default_config, value_type, isMemCpy>;
+    using Selector = rocprim::detail::batch_memcpy_config_selector<value_type, isMemCpy>;
 
     rocprim::detail::target_arch target_arch;
-    hipError_t success = rocprim::detail::host_target_arch(hipStreamDefault, target_arch);
+    hipError_t                   success = host_target_arch(hipStreamDefault, target_arch);
+
+    rocprim::detail::gpu target_gpu;
+    success = host_target_gpu(hipStreamDefault, target_gpu);
+
     ASSERT_EQ(success, hipSuccess);
 
-    const rocprim::detail::batch_memcpy_config_params params
-        = rocprim::detail::dispatch_target_arch<config, false>(target_arch);
+    const rocprim::detail::target get_target(target_arch, target_gpu);
+
+    const auto params
+        = rocprim::detail::get_config<Selector>(rocprim::default_config{}, get_target);
 
     const int32_t wlev_min_size = params.wlev_size_threshold;
     const int32_t blev_min_size = params.blev_size_threshold;

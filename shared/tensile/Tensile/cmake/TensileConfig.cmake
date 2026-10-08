@@ -130,6 +130,65 @@ function(TensileCreateLibraryFiles
     message(WARNING "Malformed arguments: ${Tensile_KEYWORDS_MISSING_VALUES}")
   endif()
 
+  # Each generator process owns one variant of an ISA-keyed capability map.
+  # "all" implies gfx1250-strict too, but strict cannot share an invocation with
+  # gfx1250/all (see configureCompilerTarget), so it always needs its own child.
+  set(_strict_target "")
+  set(_strict_embed_source "")
+  if(("gfx1250-strict" IN_LIST Tensile_ARCHITECTURE OR "all" IN_LIST Tensile_ARCHITECTURE)
+     AND NOT _tensile_strict_child)
+    set(_strict_args)
+    foreach(_option IN LISTS options)
+      if(Tensile_${_option})
+        list(APPEND _strict_args ${_option})
+      endif()
+    endforeach()
+    # EMBED_LIBRARY/EMBED_KEY are forwarded so the child emits its own embed
+    # source under ${OUTPUT_PATH}-strict/library/. The child suppresses its own
+    # add_library() (guarded by _tensile_strict_child below); the parent compiles
+    # both embed sources into the single requested target. Same EMBED_KEY lets the
+    # regular and strict catalogs aggregate into one keyed registry at runtime.
+    foreach(_option IN LISTS oneValueArgs)
+      if(DEFINED Tensile_${_option} AND NOT _option STREQUAL "VAR_PREFIX")
+        list(APPEND _strict_args ${_option} "${Tensile_${_option}}")
+      endif()
+    endforeach()
+    if(Tensile_EMBED_LIBRARY)
+      set(_strict_embed_source
+        "${Tensile_OUTPUT_PATH}-strict/library/${Tensile_EMBED_LIBRARY}.cpp")
+    endif()
+    if(NOT Tensile_VAR_PREFIX)
+      set(Tensile_VAR_PREFIX TENSILE)
+    endif()
+    set(_strict_prefix "${Tensile_VAR_PREFIX}_STRICT")
+    set(_strict_target "${_strict_prefix}_LIBRARY_TARGET")
+    # The child flag prevents recursion; compiler selection remains the target
+    # name, not a workflow option or a second logical GPU family.
+    set(_tensile_strict_child ON)
+    list(REMOVE_ITEM Tensile_ARCHITECTURE gfx1250-strict)
+    TensileCreateLibraryFiles(
+      "${Tensile_LOGIC_PATH}" "${Tensile_OUTPUT_PATH}-strict"
+      ${_strict_args} ARCHITECTURE gfx1250-strict VAR_PREFIX "${_strict_prefix}")
+    unset(_tensile_strict_child)
+    add_custom_command(TARGET ${_strict_target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${Tensile_OUTPUT_PATH}-strict/library/gfx1250-strict"
+        "${Tensile_OUTPUT_PATH}/library/gfx1250-strict"
+      VERBATIM)
+    if(NOT Tensile_ARCHITECTURE)
+      # strict-only: no regular generator invocation follows, so build the
+      # requested embed target here from the strict source alone.
+      add_custom_target(${Tensile_VAR_PREFIX}_LIBRARY_TARGET DEPENDS ${_strict_target})
+      if(Tensile_EMBED_LIBRARY)
+        set_source_files_properties(${_strict_embed_source} PROPERTIES GENERATED TRUE)
+        add_library(${Tensile_EMBED_LIBRARY} ${_strict_embed_source})
+        target_link_libraries(${Tensile_EMBED_LIBRARY} PUBLIC TensileHost)
+        add_dependencies(${Tensile_EMBED_LIBRARY} ${Tensile_VAR_PREFIX}_LIBRARY_TARGET)
+      endif()
+      return()
+    endif()
+  endif()
+
   # Parse incoming options
   if(Tensile_TENSILE_ROOT)
     set(Script "${Tensile_TENSILE_ROOT}/bin/TensileCreateLibrary")
@@ -215,6 +274,10 @@ function(TensileCreateLibraryFiles
     set(Options ${Options} "--architecture=${archString}")
   endif()
 
+  if(Tensile_NO_ENUMERATE)
+    set(Options ${Options} "--no-enumerate")
+  endif()
+
   set(CommandLine ${Script} ${Options} ${Tensile_LOGIC_PATH} ${Tensile_OUTPUT_PATH} HIP)
   if (WIN32 OR (VIRTUALENV_BIN_DIR AND VIRTUALENV_PYTHON_EXENAME))
     set(CommandLine ${VIRTUALENV_BIN_DIR}/${VIRTUALENV_PYTHON_EXENAME} ${CommandLine})
@@ -244,7 +307,36 @@ function(TensileCreateLibraryFiles
           set(Tensile_VAR_PREFIX TENSILE)
       endif()
 
-      set(Tensile_MANIFEST_FILE_PATH "${Tensile_OUTPUT_PATH}/library/TensileManifest.txt")
+      # Compute the manifest path using the same routing logic as TensileCreateLibrary.py
+      # libraryDir(): route by distinct base arch count, not raw arch string count.
+      # xnack variants of one arch (e.g. gfx90a:xnack+;gfx90a:xnack-) form a single-family
+      # shard and share a library/gfx90a/ subdirectory; truly multi-arch builds use library/.
+      set(_tensile_manifest_dir "${Tensile_OUTPUT_PATH}/library")
+      list(LENGTH Tensile_ARCHITECTURE _tensile_arch_count)
+      if(_tensile_arch_count GREATER 0)
+        # Collect unique base arch names (strip everything from ':' onwards).
+        set(_tensile_base_archs "")
+        foreach(_arch IN LISTS Tensile_ARCHITECTURE)
+          string(REGEX REPLACE ":.*$" "" _base "${_arch}")
+          list(APPEND _tensile_base_archs "${_base}")
+        endforeach()
+        list(REMOVE_DUPLICATES _tensile_base_archs)
+        list(LENGTH _tensile_base_archs _tensile_base_arch_count)
+        if(_tensile_base_arch_count EQUAL 1)
+          # Single base arch (possibly multiple xnack variants): use arch subdir.
+          list(GET _tensile_base_archs 0 _tensile_base_arch)
+          if(_tensile_arch_count EQUAL 1)
+            # Exactly one variant: use full dash-form arch name (e.g. gfx90a-xnack-).
+            list(GET Tensile_ARCHITECTURE 0 _tensile_single_arch)
+            string(REPLACE ":" "-" _tensile_arch_dir "${_tensile_single_arch}")
+          else()
+            # Multiple xnack variants of same arch: use base arch name (e.g. gfx90a).
+            set(_tensile_arch_dir "${_tensile_base_arch}")
+          endif()
+          set(_tensile_manifest_dir "${Tensile_OUTPUT_PATH}/library/${_tensile_arch_dir}")
+        endif()
+      endif()
+      set(Tensile_MANIFEST_FILE_PATH "${_tensile_manifest_dir}/TensileManifest.txt")
       message(STATUS "Tensile_MANIFEST_FILE_PATH: ${Tensile_MANIFEST_FILE_PATH}")
 
       if($ENV{ENABLE_ADDRESS_SANITIZER})
@@ -276,10 +368,23 @@ function(TensileCreateLibraryFiles
          VERBATIM)
   endif()
 
-  if(Tensile_EMBED_LIBRARY)
+  if(_strict_target)
+    add_dependencies(${Tensile_VAR_PREFIX}_LIBRARY_TARGET ${_strict_target})
+  endif()
+
+  # The strict child emits its embed source but must not create the shared embed
+  # target — the parent owns add_library() and compiles both sources into it.
+  if(Tensile_EMBED_LIBRARY AND NOT _tensile_strict_child)
 
       set_source_files_properties(${Tensile_EMBED_LIBRARY_SOURCE} PROPERTIES GENERATED TRUE)
-      add_library(${Tensile_EMBED_LIBRARY} ${Tensile_EMBED_LIBRARY_SOURCE})
+      # Aggregate the strict embed source (if any) into the same target. Both use
+      # the same EMBED_KEY, so their catalogs register together at runtime; each
+      # source wraps its symbol in an anonymous namespace, so there is no ODR clash.
+      if(_strict_embed_source)
+        set_source_files_properties(${_strict_embed_source} PROPERTIES GENERATED TRUE)
+      endif()
+      add_library(${Tensile_EMBED_LIBRARY}
+        ${Tensile_EMBED_LIBRARY_SOURCE} ${_strict_embed_source})
       target_link_libraries(${Tensile_EMBED_LIBRARY} PUBLIC TensileHost)
 
       add_dependencies(${Tensile_EMBED_LIBRARY} ${Tensile_VAR_PREFIX}_LIBRARY_TARGET)

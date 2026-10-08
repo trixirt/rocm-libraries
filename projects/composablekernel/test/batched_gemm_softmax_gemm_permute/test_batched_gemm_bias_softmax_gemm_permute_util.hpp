@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2018-2025, Advanced Micro Devices, Inc. All rights reserved.
 
 #include <iostream>
 
@@ -54,6 +54,7 @@ struct TestBatchedGemmMaskingScaleSoftmaxGemmPermute : public ::testing::Test
 
     void RunSingle(int M, int N, int K, int O, int G0, int G1)
     {
+        int init_method = std::is_same_v<ADataType, ck::bhalf_t> ? 4 : 2;
         bool pass =
             ck::profiler::profile_batched_gemm_bias_softmax_gemm_permute_impl<NumDimGType::value,
                                                                               NumDimMType::value,
@@ -67,7 +68,7 @@ struct TestBatchedGemmMaskingScaleSoftmaxGemmPermute : public ::testing::Test
                                                                               Acc0BiasDataType,
                                                                               Acc1BiasDataType,
                                                                               MaskingType::value>(
-                verify_, 2, false, bench_, M, N, K, O, G0, G1, -1, instance_index);
+                verify_, init_method, false, bench_, M, N, K, O, G0, G1, -1, instance_index);
 
         EXPECT_TRUE(pass);
     }

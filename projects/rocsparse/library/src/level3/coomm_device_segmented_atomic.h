@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
- * Copyright (C) 2024-2025 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2024-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -38,25 +38,25 @@ namespace rocsparse
               typename C>
     ROCSPARSE_DEVICE_ILF void coommnn_segmented_atomic_device(rocsparse_operation  trans_B,
                                                               int64_t              nnz,
+                                                              I                    m,
+                                                              I                    n,
                                                               I                    nstart,
-                                                              int64_t              batch_stride_A,
                                                               T                    alpha,
                                                               const I*             coo_row_ind,
                                                               const I*             coo_col_ind,
                                                               const A*             coo_val,
                                                               const B*             dense_B,
                                                               int64_t              ldb,
-                                                              int64_t              batch_stride_B,
                                                               C*                   dense_C,
                                                               int64_t              ldc,
-                                                              int64_t              batch_stride_C,
                                                               rocsparse_order      order_C,
                                                               rocsparse_index_base idx_base)
     {
         const int tid = hipThreadIdx_x;
         const int lid = tid & (WF_SIZE - 1);
 
-        const int batch = hipBlockIdx_z;
+        // Compute size of dense_C for 4-argument atomic_add
+        const int64_t dense_C_size = (order_C == rocsparse_order_column) ? (ldc * n) : (m * ldc);
 
         // Shared memory to hold row indices and values for segmented reduction
         __shared__ I shared_row[WF_SIZE];
@@ -80,19 +80,10 @@ namespace rocsparse
             // Get corresponding COO entry
 
             const I r
-                = (idx < nnz)
-                      ? rocsparse::nontemporal_load(coo_row_ind + idx + batch_stride_A * batch)
-                            - idx_base
-                      : -1;
-            const I c
-                = (idx < nnz)
-                      ? rocsparse::nontemporal_load(coo_col_ind + idx + batch_stride_A * batch)
-                            - idx_base
-                      : 0;
-            const T v
-                = (idx < nnz)
-                      ? alpha * rocsparse::nontemporal_load(coo_val + idx + batch_stride_A * batch)
-                      : static_cast<T>(0);
+                = (idx < nnz) ? rocsparse::nontemporal_load(coo_row_ind + idx) - idx_base : -1;
+            const I c = (idx < nnz) ? rocsparse::nontemporal_load(coo_col_ind + idx) - idx_base : 0;
+            const T v = (idx < nnz) ? alpha * rocsparse::nontemporal_load(coo_val + idx)
+                                    : static_cast<T>(0);
 
             row = r;
 
@@ -102,16 +93,14 @@ namespace rocsparse
                 {
                     for(uint32_t p = 0; p < COLS; p++)
                     {
-                        val[p] = v
-                                 * rocsparse::conj(
-                                     dense_B[c * ldb + (col_offset + p) + batch_stride_B * batch]);
+                        val[p] = v * rocsparse::conj(dense_B[c * ldb + (col_offset + p)]);
                     }
                 }
                 else
                 {
                     for(uint32_t p = 0; p < COLS; p++)
                     {
-                        val[p] = v * dense_B[c * ldb + (col_offset + p) + batch_stride_B * batch];
+                        val[p] = v * dense_B[c * ldb + (col_offset + p)];
                     }
                 }
             }
@@ -121,16 +110,14 @@ namespace rocsparse
                 {
                     for(uint32_t p = 0; p < COLS; p++)
                     {
-                        val[p] = v
-                                 * rocsparse::conj(
-                                     dense_B[(col_offset + p) * ldb + c + batch_stride_B * batch]);
+                        val[p] = v * rocsparse::conj(dense_B[(col_offset + p) * ldb + c]);
                     }
                 }
                 else
                 {
                     for(uint32_t p = 0; p < COLS; p++)
                     {
-                        val[p] = v * dense_B[(col_offset + p) * ldb + c + batch_stride_B * batch];
+                        val[p] = v * dense_B[(col_offset + p) * ldb + c];
                     }
                 }
             }
@@ -154,18 +141,20 @@ namespace rocsparse
                     {
                         for(uint32_t p = 0; p < COLS; p++)
                         {
-                            rocsparse::atomic_add(
-                                &dense_C[prevrow + (col_offset + p) * ldc + batch_stride_C * batch],
-                                static_cast<C>(shared_val[p][WF_SIZE - 1]));
+                            rocsparse::atomic_add(dense_C,
+                                                  prevrow + (col_offset + p) * ldc,
+                                                  dense_C_size,
+                                                  static_cast<C>(shared_val[p][WF_SIZE - 1]));
                         }
                     }
                     else
                     {
                         for(uint32_t p = 0; p < COLS; p++)
                         {
-                            rocsparse::atomic_add(
-                                &dense_C[(col_offset + p) + prevrow * ldc + batch_stride_C * batch],
-                                static_cast<C>(shared_val[p][WF_SIZE - 1]));
+                            rocsparse::atomic_add(dense_C,
+                                                  col_offset + p + prevrow * ldc,
+                                                  dense_C_size,
+                                                  static_cast<C>(shared_val[p][WF_SIZE - 1]));
                         }
                     }
                 }
@@ -215,18 +204,20 @@ namespace rocsparse
                     {
                         for(uint32_t p = 0; p < COLS; p++)
                         {
-                            rocsparse::atomic_add(
-                                &dense_C[row + (col_offset + p) * ldc + batch_stride_C * batch],
-                                static_cast<C>(val[p]));
+                            rocsparse::atomic_add(dense_C,
+                                                  row + (col_offset + p) * ldc,
+                                                  dense_C_size,
+                                                  static_cast<C>(val[p]));
                         }
                     }
                     else
                     {
                         for(uint32_t p = 0; p < COLS; p++)
                         {
-                            rocsparse::atomic_add(
-                                &dense_C[(col_offset + p) + row * ldc + batch_stride_C * batch],
-                                static_cast<C>(val[p]));
+                            rocsparse::atomic_add(dense_C,
+                                                  col_offset + p + row * ldc,
+                                                  dense_C_size,
+                                                  static_cast<C>(val[p]));
                         }
                     }
                 }
@@ -240,9 +231,10 @@ namespace rocsparse
             {
                 for(uint32_t p = 0; p < COLS; p++)
                 {
-                    rocsparse::atomic_add(
-                        &dense_C[row + (col_offset + p) * ldc + batch_stride_C * batch],
-                        static_cast<C>(val[p]));
+                    rocsparse::atomic_add(dense_C,
+                                          row + (col_offset + p) * ldc,
+                                          dense_C_size,
+                                          static_cast<C>(val[p]));
                 }
             }
             else
@@ -250,8 +242,7 @@ namespace rocsparse
                 for(uint32_t p = 0; p < COLS; p++)
                 {
                     rocsparse::atomic_add(
-                        &dense_C[(col_offset + p) + row * ldc + batch_stride_C * batch],
-                        static_cast<C>(val[p]));
+                        dense_C, col_offset + p + row * ldc, dense_C_size, static_cast<C>(val[p]));
                 }
             }
         }

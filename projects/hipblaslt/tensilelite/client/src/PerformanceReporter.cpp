@@ -25,6 +25,7 @@
  *******************************************************************************/
 
 #include "PerformanceReporter.hpp"
+#include "TimingInstrumentation.hpp"
 #include "Tensile/hip/HipUtils.hpp"
 
 #include <cmath>
@@ -57,7 +58,6 @@ namespace TensileLite
                                                  double readEff)
         {
             HIP_CHECK_EXC(hipGetDeviceProperties(&m_props, deviceIndex));
-#if HIP_VERSION >= 50220730
             int hip_version;
             HIP_CHECK_EXC(hipRuntimeGetVersion(&hip_version));
             if(hip_version >= 50220730)
@@ -66,7 +66,6 @@ namespace TensileLite
                                                     hipDeviceAttributePhysicalMultiProcessorCount,
                                                     deviceIndex));
             }
-#endif
             setNumCUs();
             setMemoryBusWidth();
             setPerfModel(l2ReadHits, l2WriteHits, l2ReadBwMultiplier, readEff);
@@ -123,6 +122,7 @@ namespace TensileLite
 
         void PerformanceReporter::postSolution()
         {
+            ScopedTimer timer("post_solution_perf_reset");
             m_clockMhz         = std::numeric_limits<double>::quiet_NaN();
             m_memClockMhz      = std::numeric_limits<double>::quiet_NaN();
             m_gFlops           = std::numeric_limits<double>::quiet_NaN();

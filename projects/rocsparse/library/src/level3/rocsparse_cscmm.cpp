@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
- * Copyright (C) 2025 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -219,6 +219,25 @@ namespace rocsparse
          CSCMM_CONFIG(rocsparse_datatype_f32_r,
                       rocsparse_indextype_i32,
                       rocsparse_indextype_i32,
+                      rocsparse_datatype_f16_r,
+                      rocsparse_datatype_f16_r,
+                      rocsparse_datatype_f16_r),
+         CSCMM_CONFIG(rocsparse_datatype_f32_r,
+                      rocsparse_indextype_i64,
+                      rocsparse_indextype_i32,
+                      rocsparse_datatype_f16_r,
+                      rocsparse_datatype_f16_r,
+                      rocsparse_datatype_f16_r),
+         CSCMM_CONFIG(rocsparse_datatype_f32_r,
+                      rocsparse_indextype_i64,
+                      rocsparse_indextype_i64,
+                      rocsparse_datatype_f16_r,
+                      rocsparse_datatype_f16_r,
+                      rocsparse_datatype_f16_r),
+
+         CSCMM_CONFIG(rocsparse_datatype_f32_r,
+                      rocsparse_indextype_i32,
+                      rocsparse_indextype_i32,
                       rocsparse_datatype_bf16_r,
                       rocsparse_datatype_bf16_r,
                       rocsparse_datatype_f32_r),
@@ -233,7 +252,26 @@ namespace rocsparse
                       rocsparse_indextype_i64,
                       rocsparse_datatype_bf16_r,
                       rocsparse_datatype_bf16_r,
-                      rocsparse_datatype_f32_r)}};
+                      rocsparse_datatype_f32_r),
+
+         CSCMM_CONFIG(rocsparse_datatype_f32_r,
+                      rocsparse_indextype_i32,
+                      rocsparse_indextype_i32,
+                      rocsparse_datatype_bf16_r,
+                      rocsparse_datatype_bf16_r,
+                      rocsparse_datatype_bf16_r),
+         CSCMM_CONFIG(rocsparse_datatype_f32_r,
+                      rocsparse_indextype_i64,
+                      rocsparse_indextype_i32,
+                      rocsparse_datatype_bf16_r,
+                      rocsparse_datatype_bf16_r,
+                      rocsparse_datatype_bf16_r),
+         CSCMM_CONFIG(rocsparse_datatype_f32_r,
+                      rocsparse_indextype_i64,
+                      rocsparse_indextype_i64,
+                      rocsparse_datatype_bf16_r,
+                      rocsparse_datatype_bf16_r,
+                      rocsparse_datatype_bf16_r)}};
 
     static rocsparse_status cscmm_find(cscmm_t*            function_,
                                        rocsparse_datatype  t_type_,
@@ -335,10 +373,27 @@ rocsparse_status rocsparse::cscmm(rocsparse_handle          handle,
                                   int64_t                   batch_count_C,
                                   int64_t                   batch_stride_C,
                                   rocsparse_order           order_C,
-                                  void*                     temp_buffer)
+                                  const rocsparse::spmm_default_alg_info* alg_info,
+                                  void*                                   temp_buffer)
 {
 
     ROCSPARSE_ROUTINE_TRACE;
+
+    // Re-derive the analysis-time choice from the cached profile with the flipped
+    // operation (see cscmm_analysis). Pure and launch-free.
+    if(alg == rocsparse_csrmm_alg_default && alg_info != nullptr && alg_info->profile != nullptr)
+    {
+        const rocsparse_operation effective_trans_A = (trans_A == rocsparse_operation_none)
+                                                          ? rocsparse_operation_transpose
+                                                          : rocsparse_operation_none;
+        RETURN_IF_ROCSPARSE_ERROR(
+            rocsparse::csrmm_select_default_alg(effective_trans_A,
+                                                alg_info->is_batched,
+                                                handle->properties.multiProcessorCount,
+                                                *alg_info->profile,
+                                                alg));
+    }
+
     rocsparse::cscmm_t f;
     RETURN_IF_ROCSPARSE_ERROR(rocsparse::cscmm_find(&f,
                                                     alpha_datatype,

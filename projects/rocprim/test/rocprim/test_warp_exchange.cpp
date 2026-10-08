@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2022-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -27,6 +27,7 @@
 #include "../../common/warp_exchange.hpp"
 
 #include "test_utils.hpp"
+#include "test_utils_types.hpp"
 
 #include <rocprim/config.hpp>
 #include <rocprim/device/config_types.hpp>
@@ -134,78 +135,50 @@ using WarpExchangeTestParams = ::testing::Types<
     Params<rocprim::bfloat16, 64U, 16U, common::StripedToBlockedShuffleOp>,
     Params<float, 2U, 16U, common::StripedToBlockedShuffleOp>>;
 
-template<unsigned int ItemsPerThread, unsigned int LogicalWarpSize, class Op, class T>
-__device__
-auto warp_exchange_test(T* d_input, T* d_output)
-    -> std::enable_if_t<common::device_test_enabled_for_warp_size_v<LogicalWarpSize>>
+template<unsigned int ItemsPerThread,
+         unsigned int LogicalWarpSize,
+         class Op,
+         bool InPlace = true,
+         class T>
+__global__
+void warp_exchange_kernel(T* d_input, T* d_output)
 {
-    using warp_exchange_type         = ::rocprim::warp_exchange<T, ItemsPerThread, LogicalWarpSize>;
-    constexpr unsigned int num_warps = ::rocprim::arch::wavefront::max_size() / LogicalWarpSize;
-    ROCPRIM_SHARED_MEMORY typename warp_exchange_type::storage_type storage[num_warps];
-
-    T thread_data[ItemsPerThread];
-    for(unsigned int i = 0; i < ItemsPerThread; i++)
+    if constexpr(common::device_test_enabled_for_warp_size_v<LogicalWarpSize>)
     {
-        thread_data[i] = d_input[threadIdx.x * ItemsPerThread + i];
-    }
+        T thread_data[ItemsPerThread];
+        ROCPRIM_UNROLL
+        for(unsigned int i = 0; i < ItemsPerThread; i++)
+        {
+            thread_data[i] = d_input[threadIdx.x * ItemsPerThread + i];
+        }
 
-    const unsigned int warp_id = threadIdx.x / LogicalWarpSize;
-    Op{}(warp_exchange_type(), thread_data, thread_data, storage[warp_id]);
+        using warp_exchange_type = ::rocprim::warp_exchange<T, ItemsPerThread, LogicalWarpSize>;
+        constexpr unsigned int num_warps = ::rocprim::arch::wavefront::max_size() / LogicalWarpSize;
+        ROCPRIM_SHARED_MEMORY
+        typename warp_exchange_type::storage_type storage[num_warps];
 
-    for(unsigned int i = 0; i < ItemsPerThread; i++)
-    {
-        d_output[threadIdx.x * ItemsPerThread + i] = thread_data[i];
-    }
-}
+        const unsigned int warp_id = threadIdx.x / LogicalWarpSize;
+        if constexpr(InPlace)
+        {
+            Op{}(warp_exchange_type(), thread_data, storage[warp_id]);
 
-template<unsigned int ItemsPerThread, unsigned int LogicalWarpSize, class Op, class T>
-__device__
-auto warp_exchange_test(T* /*d_input*/, T* /*d_output*/)
-    -> std::enable_if_t<!common::device_test_enabled_for_warp_size_v<LogicalWarpSize>>
-{}
+            ROCPRIM_UNROLL
+            for(unsigned int i = 0; i < ItemsPerThread; i++)
+            {
+                d_output[threadIdx.x * ItemsPerThread + i] = thread_data[i];
+            }
+        }
+        else
+        {
+            T output[ItemsPerThread];
+            Op{}(warp_exchange_type(), thread_data, output, storage[warp_id]);
 
-template<unsigned int ItemsPerThread, unsigned int LogicalWarpSize, class Op, class T>
-__device__
-auto warp_exchange_test_not_inplace(T* d_input, T* d_output)
-    -> std::enable_if_t<common::device_test_enabled_for_warp_size_v<LogicalWarpSize>>
-{
-    using warp_exchange_type         = ::rocprim::warp_exchange<T, ItemsPerThread, LogicalWarpSize>;
-    constexpr unsigned int num_warps = ::rocprim::arch::wavefront::max_size() / LogicalWarpSize;
-    ROCPRIM_SHARED_MEMORY typename warp_exchange_type::storage_type storage[num_warps];
-
-    T thread_data[ItemsPerThread];
-    for(unsigned int i = 0; i < ItemsPerThread; i++)
-    {
-        thread_data[i] = d_input[threadIdx.x * ItemsPerThread + i];
-    }
-
-    T output[ItemsPerThread];
-
-    const unsigned int warp_id = threadIdx.x / LogicalWarpSize;
-    Op{}(warp_exchange_type(), thread_data, output, storage[warp_id]);
-
-    for(unsigned int i = 0; i < ItemsPerThread; i++)
-    {
-        d_output[threadIdx.x * ItemsPerThread + i] = output[i];
-    }
-}
-
-template<unsigned int ItemsPerThread, unsigned int LogicalWarpSize, class Op, class T>
-__device__
-auto warp_exchange_test_not_inplace(T* /*d_input*/, T* /*d_output*/)
-    -> std::enable_if_t<!common::device_test_enabled_for_warp_size_v<LogicalWarpSize>>
-{}
-
-template<unsigned int ItemsPerThread, unsigned int LogicalWarpSize, class Op, class T>
-__global__ void warp_exchange_kernel(T* d_input, T* d_output, bool inplace = true)
-{
-    if(inplace)
-    {
-        warp_exchange_test<ItemsPerThread, LogicalWarpSize, Op>(d_input, d_output);
-    }
-    else
-    {
-        warp_exchange_test_not_inplace<ItemsPerThread, LogicalWarpSize, Op>(d_input, d_output);
+            ROCPRIM_UNROLL
+            for(unsigned int i = 0; i < ItemsPerThread; i++)
+            {
+                d_output[threadIdx.x * ItemsPerThread + i] = output[i];
+            }
+        }
     }
 }
 
@@ -227,7 +200,35 @@ std::vector<T> stripe_vector(const std::vector<T>& v,
     return striped;
 }
 
-TYPED_TEST_SUITE(WarpExchangeTest, WarpExchangeTestParams);
+struct WarpExchangeTestNameGenerator
+{
+    template<class Op>
+    static std::string op_tag()
+    {
+        if constexpr(std::is_same_v<Op, void>) return "";
+        else if constexpr(std::is_same_v<Op, common::BlockedToStripedOp>)
+            return "_BlockedToStriped";
+        else if constexpr(std::is_same_v<Op, common::BlockedToStripedShuffleOp>)
+            return "_BlockedToStripedShuffle";
+        else if constexpr(std::is_same_v<Op, common::StripedToBlockedOp>)
+            return "_StripedToBlocked";
+        else if constexpr(std::is_same_v<Op, common::StripedToBlockedShuffleOp>)
+            return "_StripedToBlockedShuffle";
+        else
+            static_assert(dependent_false<Op>::value,
+                          "op_tag: add a case for this exchange op");
+    }
+
+    template<class Params>
+    static std::string GetName(int /*index*/)
+    {
+        return type_tag<typename Params::type>() + "_i"
+               + std::to_string(Params::items_per_thread) + "_w"
+               + std::to_string(Params::warp_size) + op_tag<typename Params::exchange_op>();
+    }
+};
+
+TYPED_TEST_SUITE(WarpExchangeTest, WarpExchangeTestParams, WarpExchangeTestNameGenerator);
 
 TYPED_TEST(WarpExchangeTest, WarpExchange)
 {
@@ -273,7 +274,7 @@ TYPED_TEST(WarpExchangeTest, WarpExchange)
     ASSERT_EQ(expected, output);
 }
 
-TYPED_TEST_SUITE(WarpExchangeTest, WarpExchangeTestParams);
+TYPED_TEST_SUITE(WarpExchangeTest, WarpExchangeTestParams, WarpExchangeTestNameGenerator);
 
 TYPED_TEST(WarpExchangeTest, WarpExchangeNotInplace)
 {
@@ -293,8 +294,8 @@ TYPED_TEST(WarpExchangeTest, WarpExchangeNotInplace)
     std::vector<T> input(items_count);
     std::iota(input.begin(), input.end(), static_cast<T>(0));
     auto expected = input;
-    if(std::is_same<exchange_op, common::StripedToBlockedOp>::value
-       || std::is_same<exchange_op, common::StripedToBlockedShuffleOp>::value)
+    if constexpr(std::is_same<exchange_op, common::StripedToBlockedOp>::value
+                 || std::is_same<exchange_op, common::StripedToBlockedShuffleOp>::value)
     {
         input = stripe_vector(input, warp_size, items_per_thread);
     }
@@ -303,15 +304,15 @@ TYPED_TEST(WarpExchangeTest, WarpExchangeNotInplace)
     common::device_ptr<T> d_output(items_count);
     HIP_CHECK(hipMemset(d_output.get(), 0, items_count * sizeof(T)));
 
-    warp_exchange_kernel<items_per_thread, warp_size, exchange_op>
-        <<<dim3(1), dim3(block_size), 0, 0>>>(d_input.get(), d_output.get(), false);
+    warp_exchange_kernel<items_per_thread, warp_size, exchange_op, false>
+        <<<dim3(1), dim3(block_size), 0, 0>>>(d_input.get(), d_output.get());
     HIP_CHECK(hipGetLastError());
     HIP_CHECK(hipDeviceSynchronize());
 
     auto output = d_output.load();
 
-    if(std::is_same<exchange_op, common::BlockedToStripedOp>::value
-       || std::is_same<exchange_op, common::BlockedToStripedShuffleOp>::value)
+    if constexpr(std::is_same<exchange_op, common::BlockedToStripedOp>::value
+                 || std::is_same<exchange_op, common::BlockedToStripedShuffleOp>::value)
     {
         expected = stripe_vector(expected, warp_size, items_per_thread);
     }
@@ -334,48 +335,42 @@ public:
 };
 
 template<unsigned int ItemsPerThread, unsigned int LogicalWarpSize, class T, class OffsetT>
-__device__
-auto warp_exchange_scatter_test(T* d_input, T* d_output, OffsetT* d_ranks)
-    -> std::enable_if_t<common::device_test_enabled_for_warp_size_v<LogicalWarpSize>>
+__global__
+void warp_exchange_scatter_kernel(T* d_input, T* d_output, OffsetT* d_ranks)
 {
-    using warp_exchange_type = ::rocprim::warp_exchange<T, ItemsPerThread, LogicalWarpSize>;
-
-    constexpr unsigned int num_warps = ::rocprim::arch::wavefront::max_size() / LogicalWarpSize;
-    ROCPRIM_SHARED_MEMORY typename warp_exchange_type::storage_type storage[num_warps];
-
-    T thread_data[ItemsPerThread];
-    OffsetT thread_ranks[ItemsPerThread];
-    for(unsigned int i = 0; i < ItemsPerThread; i++)
+    if constexpr(common::device_test_enabled_for_warp_size_v<LogicalWarpSize>)
     {
-        thread_data[i]  = d_input[threadIdx.x * ItemsPerThread + i];
-        thread_ranks[i] = d_ranks[threadIdx.x * ItemsPerThread + i];
-    }
 
-    const unsigned int warp_id = threadIdx.x / LogicalWarpSize;
-    warp_exchange_type{}.scatter_to_striped(thread_data,
-                                            thread_data,
-                                            thread_ranks,
-                                            storage[warp_id]);
+        using warp_exchange_type = ::rocprim::warp_exchange<T, ItemsPerThread, LogicalWarpSize>;
 
-    for(unsigned int i = 0; i < ItemsPerThread; i++)
-    {
-        d_output[threadIdx.x * ItemsPerThread + i] = thread_data[i];
+        constexpr unsigned int num_warps = ::rocprim::arch::wavefront::max_size() / LogicalWarpSize;
+        ROCPRIM_SHARED_MEMORY
+        typename warp_exchange_type::storage_type storage[num_warps];
+
+        T       thread_data[ItemsPerThread];
+        OffsetT thread_ranks[ItemsPerThread];
+        for(unsigned int i = 0; i < ItemsPerThread; i++)
+        {
+            thread_data[i]  = d_input[threadIdx.x * ItemsPerThread + i];
+            thread_ranks[i] = d_ranks[threadIdx.x * ItemsPerThread + i];
+        }
+
+        const unsigned int warp_id = threadIdx.x / LogicalWarpSize;
+        warp_exchange_type{}.scatter_to_striped(thread_data,
+                                                thread_data,
+                                                thread_ranks,
+                                                storage[warp_id]);
+
+        for(unsigned int i = 0; i < ItemsPerThread; i++)
+        {
+            d_output[threadIdx.x * ItemsPerThread + i] = thread_data[i];
+        }
     }
 }
 
-template<unsigned int ItemsPerThread, unsigned int LogicalWarpSize, class T, class OffsetT>
-__device__
-auto warp_exchange_scatter_test(T* /*d_input*/, T* /*d_output*/, OffsetT* /*d_ranks*/)
-    -> std::enable_if_t<!common::device_test_enabled_for_warp_size_v<LogicalWarpSize>>
-{}
-
-template<unsigned int ItemsPerThread, unsigned int LogicalWarpSize, class T, class OffsetT>
-__global__ void warp_exchange_scatter_kernel(T* d_input, T* d_output, OffsetT* d_ranks)
-{
-    warp_exchange_scatter_test<ItemsPerThread, LogicalWarpSize>(d_input, d_output, d_ranks);
-}
-
-TYPED_TEST_SUITE(WarpExchangeScatterTest, WarpExchangeScatterTestParams);
+TYPED_TEST_SUITE(WarpExchangeScatterTest,
+                 WarpExchangeScatterTestParams,
+                 WarpExchangeTestNameGenerator);
 
 TYPED_TEST(WarpExchangeScatterTest, WarpExchangeScatter)
 {

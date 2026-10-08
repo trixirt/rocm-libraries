@@ -34,6 +34,7 @@
 #include "common/misc/rocsolver.hpp"
 #include "common/misc/rocsolver_arguments.hpp"
 #include "common/misc/rocsolver_test.hpp"
+#include "common/misc/rocsolver_timer.hpp"
 
 template <bool STRIDED, bool SYGST, typename T>
 void sygsx_hegsx_checkBadArgs(const rocblas_handle handle,
@@ -201,20 +202,31 @@ void sygsx_hegsx_initData(const rocblas_handle handle,
             T one = T(1);
             if(itype == rocblas_eform_ax)
             {
-                // form A = U' M U
-                cpu_trmm(rocblas_side_left, rocblas_fill_upper, rocblas_operation_conjugate_transpose,
-                         rocblas_diagonal_non_unit, n, n, one, U[b], ldu, hA[b], lda);
-                cpu_trmm(rocblas_side_right, rocblas_fill_upper, rocblas_operation_none,
-                         rocblas_diagonal_non_unit, n, n, one, U[b], ldu, hA[b], lda);
+                if(test)
+                {
+                    // -------------------------------------
+                    // form A = U' M U only for verification
+                    // -------------------------------------
+                    cpu_trmm(rocblas_side_left, rocblas_fill_upper,
+                             rocblas_operation_conjugate_transpose, rocblas_diagonal_non_unit, n, n,
+                             one, U[b], ldu, hA[b], lda);
+                    cpu_trmm(rocblas_side_right, rocblas_fill_upper, rocblas_operation_none,
+                             rocblas_diagonal_non_unit, n, n, one, U[b], ldu, hA[b], lda);
+                }
             }
             else
             {
-                // form A = inv(U) M inv(U')
-                cpu_trsm(rocblas_side_left, rocblas_fill_upper, rocblas_operation_none,
-                         rocblas_diagonal_non_unit, n, n, one, U[b], ldu, hA[b], lda);
-                cpu_trsm(rocblas_side_right, rocblas_fill_upper,
-                         rocblas_operation_conjugate_transpose, rocblas_diagonal_non_unit, n, n,
-                         one, U[b], ldu, hA[b], lda);
+                if(test)
+                {
+                    // -------------------------------------
+                    // form A = inv(U) M inv(U') only for verification
+                    // -------------------------------------
+                    cpu_trsm(rocblas_side_left, rocblas_fill_upper, rocblas_operation_none,
+                             rocblas_diagonal_non_unit, n, n, one, U[b], ldu, hA[b], lda);
+                    cpu_trsm(rocblas_side_right, rocblas_fill_upper,
+                             rocblas_operation_conjugate_transpose, rocblas_diagonal_non_unit, n, n,
+                             one, U[b], ldu, hA[b], lda);
+                }
             }
         }
     }
@@ -340,7 +352,7 @@ void sygsx_hegsx_getPerfData(const rocblas_handle handle,
     // gpu-lapack performance
     hipStream_t stream;
     CHECK_ROCBLAS_ERROR(rocblas_get_stream(handle, &stream));
-    double start;
+    rocsolver_timer timer;
 
     if(profile > 0)
     {
@@ -357,12 +369,12 @@ void sygsx_hegsx_getPerfData(const rocblas_handle handle,
         sygsx_hegsx_initData<false, true, T>(handle, itype, uplo, n, dA, lda, stA, dB, ldb, stB, bc,
                                              hA, hB, M, false);
 
-        start = get_time_us_sync(stream);
+        timer.start(stream);
         rocsolver_sygsx_hegsx(STRIDED, SYGST, handle, itype, uplo, n, dA.data(), lda, stA,
                               dB.data(), ldb, stB, bc);
-        *gpu_time_used += get_time_us_sync(stream) - start;
+        timer.end(stream);
     }
-    *gpu_time_used /= hot_calls;
+    *gpu_time_used = timer.get_combined();
 }
 
 template <bool BATCHED, bool STRIDED, bool SYGST, typename T>
@@ -484,7 +496,7 @@ void testing_sygsx_hegsx(Arguments& argus)
                                                     stB, bc, hA, hARes, hB, &max_error);
 
         // collect performance data
-        if(argus.timing)
+        if(argus.timing && hot_calls > 0)
             sygsx_hegsx_getPerfData<STRIDED, SYGST, T>(
                 handle, itype, uplo, n, dA, lda, stA, dB, ldb, stB, bc, hA, hB, &gpu_time_used,
                 &cpu_time_used, hot_calls, argus.profile, argus.profile_kernels, argus.perf);
@@ -521,7 +533,7 @@ void testing_sygsx_hegsx(Arguments& argus)
                                                     stB, bc, hA, hARes, hB, &max_error);
 
         // collect performance data
-        if(argus.timing)
+        if(argus.timing && hot_calls > 0)
             sygsx_hegsx_getPerfData<STRIDED, SYGST, T>(
                 handle, itype, uplo, n, dA, lda, stA, dB, ldb, stB, bc, hA, hB, &gpu_time_used,
                 &cpu_time_used, hot_calls, argus.profile, argus.profile_kernels, argus.perf);

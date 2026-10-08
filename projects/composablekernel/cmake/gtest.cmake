@@ -1,3 +1,6 @@
+# Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+
 include_guard(GLOBAL)
 include(FetchContent)
 
@@ -65,6 +68,10 @@ set(GTEST_CXX_FLAGS
      -Wno-deprecated
      -Wno-unsafe-buffer-usage
      -Wno-float-equal
+     -Wno-lifetime-safety-intra-tu-suggestions
+     -Wno-lifetime-safety-cross-tu-suggestions
+     -Wno-character-conversion
+     -Wno-lifetime-safety-invalidation
 )
 
 if(WIN32)
@@ -72,7 +79,8 @@ if(WIN32)
             -Wno-suggest-destructor-override
             -Wno-suggest-override
             -Wno-nonportable-system-include-path
-            -Wno-language-extension-token)
+            -Wno-language-extension-token
+            -Wno-lifetime-safety-invalidation)
 endif()
 
 target_compile_options(gtest PRIVATE ${GTEST_CXX_FLAGS})

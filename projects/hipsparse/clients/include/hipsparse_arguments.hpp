@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
- * Copyright (C) 2024-2025 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2024-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -38,9 +38,21 @@
 #include "hipsparse_datatype2string.hpp"
 
 template <typename T>
-static T convert_alpha_beta(double r, double i)
+inline T convert_alpha_beta(double r, double i)
 {
     return static_cast<T>(r);
+}
+
+template <>
+inline hipComplex convert_alpha_beta<hipComplex>(double r, double i)
+{
+    return make_hipFloatComplex(static_cast<float>(r), static_cast<float>(i));
+}
+
+template <>
+inline hipDoubleComplex convert_alpha_beta<hipDoubleComplex>(double r, double i)
+{
+    return make_hipDoubleComplex(r, i);
 }
 
 struct Arguments
@@ -63,6 +75,9 @@ struct Arguments
 
     hipsparseIndexType_t index_type_I;
     hipsparseIndexType_t index_type_J;
+    hipDataType          a_type;
+    hipDataType          x_type;
+    hipDataType          y_type;
     hipDataType          compute_type;
 
     double alpha;
@@ -109,6 +124,7 @@ struct Arguments
     double boostval;
     double boostvali;
 
+    int slice_size;
     int ell_width;
     int permute;
     int gtsv_alg;
@@ -117,6 +133,9 @@ struct Arguments
     int unit_check;
     int timing;
     int iters;
+
+    bool graph_test;
+    bool call_preprocess;
 
     char filename[192]; // nos2.bin, bmwcra_1.bin, etc
     char function[64]; // axpby, spmv_csr, etc
@@ -142,6 +161,9 @@ struct Arguments
 
         this->index_type_I = HIPSPARSE_INDEX_32I;
         this->index_type_J = HIPSPARSE_INDEX_32I;
+        this->a_type       = HIP_R_32F;
+        this->x_type       = HIP_R_32F;
+        this->y_type       = HIP_R_32F;
         this->compute_type = HIP_R_32F;
 
         this->alpha      = 0.0;
@@ -188,14 +210,18 @@ struct Arguments
         this->boostval     = 1.0;
         this->boostvali    = 0.0;
 
-        this->ell_width = 0;
-        this->permute   = 0;
-        this->gtsv_alg  = 0;
-        this->gpsv_alg  = 0;
+        this->slice_size = 2;
+        this->ell_width  = 0;
+        this->permute    = 0;
+        this->gtsv_alg   = 0;
+        this->gpsv_alg   = 0;
 
         this->unit_check = 1;
         this->timing     = 0;
         this->iters      = 10;
+
+        this->graph_test      = false;
+        this->call_preprocess = true;
 
         this->filename[0] = '\0';
         this->function[0] = '\0';
@@ -278,6 +304,9 @@ struct Arguments
         HIPSPARSE_FORMAT_CHECK(batch_count);
         HIPSPARSE_FORMAT_CHECK(index_type_I);
         HIPSPARSE_FORMAT_CHECK(index_type_J);
+        HIPSPARSE_FORMAT_CHECK(a_type);
+        HIPSPARSE_FORMAT_CHECK(x_type);
+        HIPSPARSE_FORMAT_CHECK(y_type);
         HIPSPARSE_FORMAT_CHECK(compute_type);
         HIPSPARSE_FORMAT_CHECK(alpha);
         HIPSPARSE_FORMAT_CHECK(alphai);
@@ -317,6 +346,7 @@ struct Arguments
         HIPSPARSE_FORMAT_CHECK(boosttol);
         HIPSPARSE_FORMAT_CHECK(boostval);
         HIPSPARSE_FORMAT_CHECK(boostvali);
+        HIPSPARSE_FORMAT_CHECK(slice_size);
         HIPSPARSE_FORMAT_CHECK(ell_width);
         HIPSPARSE_FORMAT_CHECK(permute);
         HIPSPARSE_FORMAT_CHECK(gtsv_alg);
@@ -324,6 +354,8 @@ struct Arguments
         HIPSPARSE_FORMAT_CHECK(unit_check);
         HIPSPARSE_FORMAT_CHECK(timing);
         HIPSPARSE_FORMAT_CHECK(iters);
+        HIPSPARSE_FORMAT_CHECK(graph_test);
+        HIPSPARSE_FORMAT_CHECK(call_preprocess);
         HIPSPARSE_FORMAT_CHECK(filename);
         HIPSPARSE_FORMAT_CHECK(function);
         HIPSPARSE_FORMAT_CHECK(category);
@@ -420,6 +452,9 @@ private:
         print("batch_count", arg.batch_count);
         print("index_type_I", hipsparse_indextype2string(arg.index_type_I));
         print("index_type_J", hipsparse_indextype2string(arg.index_type_J));
+        print("a_type", hipsparse_datatype2string(arg.a_type));
+        print("x_type", hipsparse_datatype2string(arg.x_type));
+        print("y_type", hipsparse_datatype2string(arg.y_type));
         print("compute_type", hipsparse_datatype2string(arg.compute_type));
         print("alpha", arg.alpha);
         print("alphai", arg.alphai);
@@ -468,6 +503,7 @@ private:
         print("boosttol", arg.boosttol);
         print("boostval", arg.boostval);
         print("boostvali", arg.boostvali);
+        print("slice_size", arg.slice_size);
         print("ell_width", arg.ell_width);
         print("permute", arg.permute);
         print("gtsv_alg", arg.gtsv_alg);
@@ -475,6 +511,8 @@ private:
         print("unit_check", arg.unit_check);
         print("timing", arg.timing);
         print("iters", arg.iters);
+        print("graph_test", arg.graph_test);
+        print("call_preprocess", arg.call_preprocess);
         return str << " }\n";
     }
 };

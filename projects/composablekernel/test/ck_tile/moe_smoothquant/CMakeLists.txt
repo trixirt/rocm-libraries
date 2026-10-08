@@ -1,4 +1,7 @@
-if(GPU_TARGETS MATCHES "gfx9|gfx11|gfx12")
+# Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+
+if(GPU_TARGETS MATCHES "gfx9|gfx11|gfx12|amdgcnspirv")
     function (add_moe_smoothquant_test TARGET_NAME MAIN_SRC)
         message(DEBUG "adding ${TARGET_NAME}")
         add_gtest_executable(${TARGET_NAME} ${MAIN_SRC})

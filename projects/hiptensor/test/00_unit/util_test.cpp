@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -52,6 +52,30 @@ TEST(stridesFromLengthsTest, UtilTest)
     EXPECT_EQ(output, expected);
 }
 
+TEST(alignStridesToModesTest, UtilTest)
+{
+    std::vector<std::size_t> const strides = {1, 3, 12}; // packed col-major for {3, 4, 5}
+
+    // Reference order equal to the tensor's own order leaves the strides untouched.
+    EXPECT_EQ(hiptensor::alignStridesToModes({'a', 'b', 'c'}, {'a', 'b', 'c'}, strides),
+              (std::vector<std::size_t>{1, 3, 12}));
+
+    // A reordered tensor is permuted so that entry i is the stride of the reference mode i.
+    EXPECT_EQ(hiptensor::alignStridesToModes({'c', 'a', 'b'}, {'a', 'b', 'c'}, strides),
+              (std::vector<std::size_t>{12, 1, 3}));
+
+    // A reference mode the tensor doesn't carry gets stride 0, broadcasting it along that mode.
+    EXPECT_EQ(hiptensor::alignStridesToModes({'a', 'b', 'd'}, {'a', 'b', 'c'}, strides),
+              (std::vector<std::size_t>{1, 3, 0}));
+
+    // A tensor of lower rank than the reference is broadcast along every mode it lacks.
+    EXPECT_EQ(hiptensor::alignStridesToModes<std::size_t>({'a', 'b', 'c'}, {'c'}, {1}),
+              (std::vector<std::size_t>{0, 0, 1}));
+
+    // Mode and stride counts must agree.
+    EXPECT_TRUE(hiptensor::alignStridesToModes({'a', 'b'}, {'a', 'b'}, strides).empty());
+}
+
 TEST(CheckApiParamsTest, UtilTest)
 {
     using hiptensor::Logger;
@@ -63,7 +87,7 @@ TEST(CheckApiParamsTest, UtilTest)
 
 TEST(hiptensorGetVersionTest, UtilTest)
 {
-    EXPECT_EQ(hiptensorGetVersion(), 2001000);
+    EXPECT_EQ(hiptensorGetVersion(), 2004000);
 }
 
 TEST(logLevelToStringTest, UtilTest)

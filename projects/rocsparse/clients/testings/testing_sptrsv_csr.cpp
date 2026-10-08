@@ -1,5 +1,5 @@
 /* ************************************************************************
-* Copyright (C) 2025 Advanced Micro Devices, Inc. All rights Reserved.
+* Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights Reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a copy
 * of this software and associated documentation files (the "Software"), to deal
@@ -20,9 +20,9 @@
 * THE SOFTWARE.
 *
 * ************************************************************************ */
-
 #include "rocsparse_clients_objects.hpp"
 #include "rocsparse_clients_sptrsv.hpp"
+#include "testing.hpp"
 
 struct rocsparse_local_sptrsv
 {
@@ -208,6 +208,10 @@ void testing_sptrsv_bad_arg(const Arguments& arg)
             case rocsparse_sptrsv_input_compute_datatype:
             case rocsparse_sptrsv_input_operation:
             case rocsparse_sptrsv_input_analysis_policy:
+#if defined(ROCSPARSE_WITH_DIAGONAL_SOLVE)
+            case rocsparse_sptrsv_input_solve_mode:
+            case rocsparse_sptrsv_input_diagonal_modifier:
+#endif
             {
                 EXPECT_ROCSPARSE_STATUS(
                     rocsparse_sptrsv_set_input(handle, sptrsv_descr, e, data, 0, p_error),
@@ -339,6 +343,13 @@ void testing_sptrsv_bad_arg(const Arguments& arg)
                                                        p_error));
                         break;
                     }
+#if defined(ROCSPARSE_WITH_DIAGONAL_SOLVE)
+                    case rocsparse_sptrsv_input_solve_mode:
+                    case rocsparse_sptrsv_input_diagonal_modifier:
+                    {
+                        break;
+                    }
+#endif
                     }
                 }
 
@@ -611,13 +622,15 @@ void testing_sptrsv_csr(const Arguments& arg)
     // check consistency.
     if((analysis_pivot_status == rocsparse_status_zero_pivot) && (analysis_zero_pivot == -1))
     {
-        std::cout << "inconsistent zero pivot detected during analysis " << std::endl;
+        std::cout << "inconsistent1 zero pivot detected during analysis status "
+                  << analysis_pivot_status << " value " << analysis_zero_pivot << std::endl;
         CHECK_ROCSPARSE_ERROR(rocsparse_status_internal_error);
     }
 
     if((analysis_pivot_status != rocsparse_status_zero_pivot) && (analysis_zero_pivot != -1))
     {
-        std::cout << "inconsistent zero pivot detected during analysis " << std::endl;
+        std::cout << "inconsistent2 zero pivot detected during analysis status "
+                  << analysis_pivot_status << " value " << analysis_zero_pivot << std::endl;
         CHECK_ROCSPARSE_ERROR(rocsparse_status_internal_error);
     }
 
@@ -783,4 +796,5 @@ INSTANTIATE(int64_t, int64_t, float);
 INSTANTIATE(int64_t, int64_t, double);
 INSTANTIATE(int64_t, int64_t, rocsparse_float_complex);
 INSTANTIATE(int64_t, int64_t, rocsparse_double_complex);
+
 void testing_sptrsv_csr_extra(const Arguments& arg) {}

@@ -3,12 +3,48 @@
 Documentation for rocWMMA is available at
 [https://rocm.docs.amd.com/projects/rocWMMA/en/latest](https://rocm.docs.amd.com/projects/rocWMMA/en/latest).
 
-## (Unreleased) rocWMMA 2.1.0 for ROCm 7.1.0
+## Since last release (ROCm 7.12)
+
+### Added
+
+* Added the following community samples for external contributions, with build support and documentation
+  * `simple_gemm_silu`: demonstrates a GEMM + SiLU fused operator using the rocWMMA API
+  * `simple_gemm_fusion`: demonstrates block-tile-level dual-GEMM fusion using the rocWMMA API
+  * `simple_gemm_swiglu`: demonstrates a SwiGLU fused dual-GEMM kernel (LLaMA/Mistral FFN gate layer) using the rocWMMA API
+
+### Changed
+
+* Updated the `find_package` search for OpenMP to prefer the `openmp-config.cmake` provided by ROCm, with a fallback to module search mode.
+* Updated `INSTALL_RPATH` and added `BUILD_RPATH` for OpenMP
+
+### Resolved issues
+
+* Improved HIP RTC regression test portability when deployed outside the default path
+
+## rocWMMA 2.2.0 for ROCm 7.2.0
+
+### Added
+
+* Added sample `perf_i8gemm` to demonstrate `int8_t` as matrix input data type
+* Added support for the gfx1150 target
+
+### Changed
+
+* Removed unnecessary const keyword to avoid compiler warnings
+* rocWMMA has been moved into the new rocm-libraries "monorepo" repository (https://github.com/ROCm/rocm-libraries). This repository consolidates a number of separate ROCm libraries and shared components.
+  * The repository migration requires a few changes to the CMake configuration of rocWMMA
+  * The repository migration rquired the GTest dependency to be updated to v1.16.0
+
+### Resolved issues
+
+* Skip invalid test configurations when using 'register file' LDS mapping
+* Ensured transform functions in samples are only available on the device
+
+## rocWMMA 2.1.0 for ROCm 7.1.1
 
 ### Added
 
 * Added more unit tests to increase the code coverage.
-* Added sample `perf_i8gemm` to demonstrate `int8_t` as matrix input data type.
 
 ### Changed
 

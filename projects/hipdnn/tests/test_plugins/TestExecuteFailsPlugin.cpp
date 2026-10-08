@@ -5,7 +5,7 @@
 #include "TestPluginEngineIdMap.hpp"
 // NOLINTNEXTLINE
 thread_local char
-    hipdnn_plugin::PluginLastErrorManager::s_lastError[HIPDNN_PLUGIN_ERROR_STRING_MAX_LENGTH]
+    hipdnn_plugin_sdk::PluginLastErrorManager::s_lastError[HIPDNN_PLUGIN_ERROR_STRING_MAX_LENGTH]
     = "";
 
 class ExecuteFailsPlugin : public TestPluginBase
@@ -19,9 +19,19 @@ public:
     {
         return "1.0.0";
     }
+
+    const char* getPluginApiVersion() const override
+    {
+        return apiVersionWithoutTweak();
+    }
+
     int64_t getEngineId() const override
     {
         return hipdnn_tests::plugin_constants::engineId<ExecuteFailsPlugin>();
+    }
+    const char* getEngineName() const override
+    {
+        return hipdnn_tests::plugin_constants::K_EXECUTE_FAILS_PLUGIN_ENGINE_NAME;
     }
     uint32_t getNumEngines() const override
     {
@@ -35,8 +45,8 @@ public:
     // Override executeGraph to simulate execution failure
     void executeGraph() const override
     {
-        throw hipdnn_plugin::HipdnnPluginException(HIPDNN_PLUGIN_STATUS_INTERNAL_ERROR,
-                                                   "Simulated execution failure for testing");
+        throw hipdnn_plugin_sdk::HipdnnPluginException(HIPDNN_PLUGIN_STATUS_INTERNAL_ERROR,
+                                                       "Simulated execution failure for testing");
     }
 };
 
@@ -46,5 +56,7 @@ __attribute__((constructor)) static void initializePlugin()
     TestPluginBase::setInstance(std::make_unique<ExecuteFailsPlugin>());
 }
 
-// Register all API functions
+// Paired with test_good_plugin, which omits the engine-name entry point, this gives
+// the engine-filtering tests one named and one unnamed engine in the same load set.
 REGISTER_TEST_PLUGIN_API()
+REGISTER_TEST_PLUGIN_ENGINE_NAME_API()

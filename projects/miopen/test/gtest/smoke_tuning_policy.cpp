@@ -5,10 +5,13 @@
 
 #include "get_handle.hpp"
 #include <gtest/gtest.h>
+#include <gmock/gmock.h>
+#include "gtest_common.hpp"
 #include "miopen/db_path.hpp"
 #include "../lib_env_var.hpp"
 
 MIOPEN_LIB_ENV_VAR(MIOPEN_USER_DB_PATH)
+MIOPEN_LIB_ENV_VAR(MIOPEN_ENABLE_LOGGING)
 
 class CPU_TuningPolicy_NONE : public ::testing::Test
 {
@@ -87,4 +90,55 @@ TEST_F(CPU_TuningPolicy_NONE, TestNullPolicyPointer)
     auto&& handle = get_handle();
 
     EXPECT_EQ(miopenGetTuningPolicy(&handle, nullptr), miopenStatusBadParm);
+}
+
+TEST_F(CPU_TuningPolicy_NONE, TestGetApiLogged)
+{
+    ScopedEnvironment<std::string> enable_logging(MIOPEN_ENABLE_LOGGING, "ON");
+    miopenTuningPolicy_t policy;
+    auto&& handle = get_handle();
+
+    testing::internal::CaptureStderr();
+    auto status = miopenGetTuningPolicy(&handle, &policy);
+    ASSERT_EQ(status, miopenStatusSuccess);
+    std::string output = testing::internal::GetCapturedStderr();
+    // When MIOpen is built as a public wrapper over a private implementation the
+    // logged function name is the renamed private entry point, because
+    // MIOPEN_LOG_FUNCTION runs inside the _impl definition. Each configuration
+    // asserts its own exact name, so a default build that somehow emitted an
+    // _impl name still fails. Spelled with HasSubstr rather than a regex:
+    // gtest's built-in regex engine (used wherever POSIX REs are unavailable,
+    // notably Windows) supports neither grouping nor alternation.
+#ifdef MIOPEN_ENABLE_HIPDNN_WRAPPER
+    EXPECT_THAT(output, testing::HasSubstr(" miopenGetTuningPolicy_impl("));
+#else
+    EXPECT_THAT(output, testing::HasSubstr(" miopenGetTuningPolicy("));
+#endif
+}
+
+TEST_F(CPU_TuningPolicy_NONE, TestSetApiLogged)
+{
+    miopenTuningPolicy_t original_policy;
+    auto&& handle = get_handle();
+
+    auto status = miopenGetTuningPolicy(&handle, &original_policy);
+    ASSERT_EQ(status, miopenStatusSuccess);
+
+    {
+        ScopedEnvironment<std::string> enable_logging(MIOPEN_ENABLE_LOGGING, "ON");
+
+        testing::internal::CaptureStderr();
+        status = miopenSetTuningPolicy(&handle, miopenTuningPolicy_t::miopenTuningPolicySearch);
+        ASSERT_EQ(status, miopenStatusSuccess);
+        std::string output = testing::internal::GetCapturedStderr();
+        // Exact per-configuration name, for the reasons given above.
+#ifdef MIOPEN_ENABLE_HIPDNN_WRAPPER
+        EXPECT_THAT(output, testing::HasSubstr(" miopenSetTuningPolicy_impl("));
+#else
+        EXPECT_THAT(output, testing::HasSubstr(" miopenSetTuningPolicy("));
+#endif
+    }
+
+    status = miopenSetTuningPolicy(&handle, original_policy);
+    ASSERT_EQ(status, miopenStatusSuccess);
 }

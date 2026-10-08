@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
- * Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2022-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -61,6 +61,12 @@ namespace rocsparse
                                                             rocsparse_order      order_C,
                                                             rocsparse_index_base idx_base)
     {
+        static_assert(WF_SIZE > 0 && (WF_SIZE & (WF_SIZE - 1)) == 0,
+                      "WF_SIZE must be a power of two.");
+        static_assert(BLOCKSIZE > 0 && (BLOCKSIZE & (BLOCKSIZE - 1)) == 0,
+                      "BLOCKSIZE must be a power of two.");
+        static_assert(BLOCKSIZE % WF_SIZE == 0, "BLOCKSIZE must be a multiple of WF_SIZE.");
+
         const int tid = hipThreadIdx_x;
         const int bid = hipBlockIdx_x;
         const int lid = tid & (WF_SIZE - 1);
@@ -198,6 +204,12 @@ namespace rocsparse
                                                                  rocsparse_order      order_C,
                                                                  rocsparse_index_base idx_base)
     {
+        static_assert(WF_SIZE > 0 && (WF_SIZE & (WF_SIZE - 1)) == 0,
+                      "WF_SIZE must be a power of two.");
+        static_assert(BLOCKSIZE > 0 && (BLOCKSIZE & (BLOCKSIZE - 1)) == 0,
+                      "BLOCKSIZE must be a power of two.");
+        static_assert(BLOCKSIZE % WF_SIZE == 0, "BLOCKSIZE must be a multiple of WF_SIZE.");
+
         const int tid = hipThreadIdx_x;
         const int bid = hipBlockIdx_x;
         const int lid = tid & (WF_SIZE - 1);
@@ -311,9 +323,11 @@ namespace rocsparse
 
     // Segmented block reduction kernel
     template <unsigned int BLOCKSIZE, typename I, typename T>
-    ROCSPARSE_DEVICE_ILF void segmented_blockreduce(const I* __restrict__ rows,
-                                                    T* __restrict__ vals)
+    ROCSPARSE_DEVICE_ILF void segmented_blockreduce(const I* rows, T* vals)
     {
+        static_assert(BLOCKSIZE > 0 && (BLOCKSIZE & (BLOCKSIZE - 1)) == 0,
+                      "BLOCKSIZE must be a power of two.");
+
         const int tid = hipThreadIdx_x;
 
         for(unsigned int j = 1; j < BLOCKSIZE; j <<= 1)
@@ -333,15 +347,17 @@ namespace rocsparse
         }
     }
 
-    // Do the final block reduction of the block reduction buffers back into global memory
+    // Do the final block reduction of the block reduction buffers back into global
+    // memory for a single batch. Pointers are expected to already be offset to the
+    // batch this block operates on.
     template <unsigned int BLOCKSIZE, typename I, typename J, typename C, typename T>
-    ROCSPARSE_KERNEL(BLOCKSIZE)
-    void csrmmnn_general_block_reduce(I nblocks,
-                                      const J* __restrict__ row_block_red,
-                                      const T* __restrict__ val_block_red,
-                                      C*              dense_C,
-                                      int64_t         ldc,
-                                      rocsparse_order order_C)
+    ROCSPARSE_DEVICE_ILF void
+        csrmmnn_general_block_reduce_device(I nblocks,
+                                            const J* __restrict__ row_block_red,
+                                            const T* __restrict__ val_block_red,
+                                            C*              dense_C,
+                                            int64_t         ldc,
+                                            rocsparse_order order_C)
     {
         const int tid = hipThreadIdx_x;
 
@@ -349,18 +365,21 @@ namespace rocsparse
         __shared__ I shared_row[BLOCKSIZE];
         __shared__ T shared_val[BLOCKSIZE];
 
+        const I col = hipBlockIdx_x;
+
         shared_row[tid] = -1;
         shared_val[tid] = static_cast<T>(0);
 
         __syncthreads();
 
-        const I col = hipBlockIdx_x;
-
-        for(I i = tid; i < nblocks; i += BLOCKSIZE)
+        for(I i = 0; i < nblocks; i += BLOCKSIZE)
         {
+            const I idx = i + tid;
+
             // Copy data to reduction buffers
-            shared_row[tid] = row_block_red[i];
-            shared_val[tid] = val_block_red[i + nblocks * col];
+            shared_row[tid] = (idx < nblocks) ? row_block_red[idx] : -1;
+            shared_val[tid]
+                = (idx < nblocks) ? val_block_red[idx + nblocks * col] : static_cast<T>(0);
 
             __syncthreads();
 
@@ -375,15 +394,44 @@ namespace rocsparse
             {
                 if(order_C == rocsparse_order_column)
                 {
-                    dense_C[row + ldc * col] = dense_C[row + ldc * col] + shared_val[tid];
+                    dense_C[row + ldc * col] = static_cast<C>(
+                        static_cast<T>(dense_C[row + ldc * col]) + shared_val[tid]);
                 }
                 else
                 {
-                    dense_C[col + ldc * row] = dense_C[col + ldc * row] + shared_val[tid];
+                    dense_C[col + ldc * row] = static_cast<C>(
+                        static_cast<T>(dense_C[col + ldc * row]) + shared_val[tid]);
                 }
             }
 
             __syncthreads();
+        }
+    }
+
+    // Do the final block reduction of the block reduction buffers back into global memory
+    template <unsigned int BLOCKSIZE, typename I, typename J, typename C, typename T>
+    ROCSPARSE_KERNEL(BLOCKSIZE)
+    void csrmmnn_general_block_reduce(I       nblocks,
+                                      int64_t batch_count,
+                                      const J* __restrict__ row_block_red,
+                                      const T* __restrict__ val_block_red,
+                                      C*              dense_C,
+                                      int64_t         ldc,
+                                      rocsparse_order order_C,
+                                      int64_t         batch_stride_C)
+    {
+        // Grid-stride loop over the batch dimension (grid y). Per-batch pointers
+        // are computed with load_pointer so the device kernel stays batch-agnostic.
+        // hipGridDim_x equals n, so the per-batch val_block_red stride is nblocks * n.
+        for(int64_t batch = hipBlockIdx_y; batch < batch_count; batch += hipGridDim_y)
+        {
+            rocsparse::csrmmnn_general_block_reduce_device<BLOCKSIZE>(
+                nblocks,
+                load_pointer(row_block_red, batch, static_cast<int64_t>(nblocks)),
+                load_pointer(val_block_red, batch, static_cast<int64_t>(nblocks) * hipGridDim_x),
+                load_pointer(dense_C, batch, batch_stride_C),
+                ldc,
+                order_C);
         }
     }
 
@@ -457,9 +505,17 @@ namespace rocsparse
                                                             rocsparse_order      order_C,
                                                             rocsparse_index_base idx_base)
     {
+        static_assert(WF_SIZE > 0 && (WF_SIZE & (WF_SIZE - 1)) == 0,
+                      "WF_SIZE must be a power of two.");
+        static_assert(BLOCKSIZE > 0, "BLOCKSIZE must be positive.");
+        static_assert(BLOCKSIZE % WF_SIZE == 0, "BLOCKSIZE must be a multiple of WF_SIZE.");
+
         const int tid = hipThreadIdx_x;
         const int bid = hipBlockIdx_x;
         const int lid = tid & (WF_SIZE - 1);
+
+        // Compute size of dense_C for 4-argument atomic_add
+        const int64_t dense_C_size = (order_C == rocsparse_order_column) ? (ldc * N) : (M * ldc);
 
         J row = 0;
         J col = 0;
@@ -496,16 +552,19 @@ namespace rocsparse
                     {
                         for(unsigned int p = 0; p < LOOPS; p++)
                         {
-                            rocsparse::atomic_add(
-                                &dense_C[(colB + p * WF_SIZE) * ldc + current_row],
-                                static_cast<C>(alpha * sum[p]));
+                            rocsparse::atomic_add(dense_C,
+                                                  (colB + p * WF_SIZE) * ldc + current_row,
+                                                  dense_C_size,
+                                                  static_cast<C>(alpha * sum[p]));
                         }
                     }
                     else
                     {
                         for(unsigned int p = 0; p < LOOPS; p++)
                         {
-                            rocsparse::atomic_add(&dense_C[current_row * ldc + colB + p * WF_SIZE],
+                            rocsparse::atomic_add(dense_C,
+                                                  current_row * ldc + colB + p * WF_SIZE,
+                                                  dense_C_size,
                                                   static_cast<C>(alpha * sum[p]));
                         }
                     }
@@ -529,7 +588,9 @@ namespace rocsparse
             {
                 for(unsigned int p = 0; p < LOOPS; p++)
                 {
-                    rocsparse::atomic_add(&dense_C[(colB + p * WF_SIZE) * ldc + current_row],
+                    rocsparse::atomic_add(dense_C,
+                                          (colB + p * WF_SIZE) * ldc + current_row,
+                                          dense_C_size,
                                           static_cast<C>(alpha * sum[p]));
                 }
             }
@@ -537,7 +598,9 @@ namespace rocsparse
             {
                 for(unsigned int p = 0; p < LOOPS; p++)
                 {
-                    rocsparse::atomic_add(&dense_C[current_row * ldc + colB + p * WF_SIZE],
+                    rocsparse::atomic_add(dense_C,
+                                          current_row * ldc + colB + p * WF_SIZE,
+                                          dense_C_size,
                                           static_cast<C>(alpha * sum[p]));
                 }
             }
@@ -571,10 +634,21 @@ namespace rocsparse
                                                                  rocsparse_order      order_C,
                                                                  rocsparse_index_base idx_base)
     {
+        static_assert(WF_SIZE > 0 && (WF_SIZE & (WF_SIZE - 1)) == 0,
+                      "WF_SIZE must be a power of two.");
+        static_assert(BLOCKSIZE > 0, "BLOCKSIZE must be positive.");
+        static_assert(BLOCKSIZE % WF_SIZE == 0, "BLOCKSIZE must be a multiple of WF_SIZE.");
+        static_assert((BLOCKSIZE / WF_SIZE) > 0
+                          && ((BLOCKSIZE / WF_SIZE) & ((BLOCKSIZE / WF_SIZE) - 1)) == 0,
+                      "BLOCKSIZE / WF_SIZE must be a power of two.");
+
         const int tid = hipThreadIdx_x;
         const int bid = hipBlockIdx_x;
         const int lid = tid & (WF_SIZE - 1);
         const int wid = tid / WF_SIZE;
+
+        // Compute size of dense_C for 4-argument atomic_add
+        const int64_t dense_C_size = (order_C == rocsparse_order_column) ? (ldc * N) : (M * ldc);
 
         __shared__ J shared_row[(BLOCKSIZE / WF_SIZE) * WF_SIZE];
         __shared__ T shared_val[(BLOCKSIZE / WF_SIZE) * WF_SIZE];
@@ -614,12 +688,16 @@ namespace rocsparse
                     {
                         if(order_C == rocsparse_order_column)
                         {
-                            rocsparse::atomic_add(&dense_C[colB * ldc + current_row],
+                            rocsparse::atomic_add(dense_C,
+                                                  colB * ldc + current_row,
+                                                  dense_C_size,
                                                   static_cast<C>(alpha * sum));
                         }
                         else
                         {
-                            rocsparse::atomic_add(&dense_C[current_row * ldc + colB],
+                            rocsparse::atomic_add(dense_C,
+                                                  current_row * ldc + colB,
+                                                  dense_C_size,
                                                   static_cast<C>(alpha * sum));
                         }
                     }
@@ -669,12 +747,16 @@ namespace rocsparse
                     {
                         if(order_C == rocsparse_order_column)
                         {
-                            rocsparse::atomic_add(&dense_C[(l + swid) * ldc + current_row],
+                            rocsparse::atomic_add(dense_C,
+                                                  (l + swid) * ldc + current_row,
+                                                  dense_C_size,
                                                   static_cast<C>(alpha * sum));
                         }
                         else
                         {
-                            rocsparse::atomic_add(&dense_C[current_row * ldc + (l + swid)],
+                            rocsparse::atomic_add(dense_C,
+                                                  current_row * ldc + (l + swid),
+                                                  dense_C_size,
                                                   static_cast<C>(alpha * sum));
                         }
                     }
@@ -689,12 +771,16 @@ namespace rocsparse
                     {
                         if(order_C == rocsparse_order_column)
                         {
-                            rocsparse::atomic_add(&dense_C[(l + swid) * ldc + current_row],
+                            rocsparse::atomic_add(dense_C,
+                                                  (l + swid) * ldc + current_row,
+                                                  dense_C_size,
                                                   static_cast<C>(alpha * sum));
                         }
                         else
                         {
-                            rocsparse::atomic_add(&dense_C[current_row * ldc + (l + swid)],
+                            rocsparse::atomic_add(dense_C,
+                                                  current_row * ldc + (l + swid),
+                                                  dense_C_size,
                                                   static_cast<C>(alpha * sum));
                         }
                     }

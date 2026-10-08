@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
-* Copyright (C) 2021-2025 Advanced Micro Devices, Inc. All rights Reserved.
+* Copyright (C) 2021-2026 Advanced Micro Devices, Inc. All rights Reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a copy
 * of this software and associated documentation files (the "Software"), to deal
@@ -24,6 +24,7 @@
 
 #include "rocsparse_common.hpp"
 #include "rocsparse_control.hpp"
+#include "rocsparse_grid.hpp"
 #include "rocsparse_utility.hpp"
 
 #include "coomm/atomic/kernel_declarations.h"
@@ -31,58 +32,62 @@
 
 namespace rocsparse
 {
-#define LAUNCH_COOMMNN_ATOMIC_MAIN_KERNEL(COOMMNN_DIM, WF_SIZE, LOOPS, TRANSB)    \
-    RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(                                           \
-        (rocsparse::coommnn_atomic_main<COOMMNN_DIM, WF_SIZE, LOOPS, TRANSB, T>), \
-        dim3((nnz - 1) / COOMMNN_DIM + 1, batch_count_C),                         \
-        dim3(COOMMNN_DIM),                                                        \
-        0,                                                                        \
-        handle->stream,                                                           \
-        conj_A,                                                                   \
-        conj_B,                                                                   \
-        main,                                                                     \
-        nnz,                                                                      \
-        n,                                                                        \
-        batch_stride_A,                                                           \
-        ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),             \
-        coo_row_ind,                                                              \
-        coo_col_ind,                                                              \
-        coo_val,                                                                  \
-        dense_B,                                                                  \
-        ldb,                                                                      \
-        batch_stride_B,                                                           \
-        dense_C,                                                                  \
-        ldc,                                                                      \
-        batch_stride_C,                                                           \
-        order_C,                                                                  \
-        descr->base,                                                              \
+#define LAUNCH_COOMMNN_ATOMIC_MAIN_KERNEL(COOMMNN_DIM, WF_SIZE, LOOPS, TRANSB)        \
+    RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(                                               \
+        (rocsparse::coommnn_atomic_main<COOMMNN_DIM, WF_SIZE, LOOPS, TRANSB, T>),     \
+        dim3((nnz - 1) / COOMMNN_DIM + 1, get_grid_size_y<I>(handle, batch_count_C)), \
+        dim3(COOMMNN_DIM),                                                            \
+        0,                                                                            \
+        handle->stream,                                                               \
+        conj_A,                                                                       \
+        conj_B,                                                                       \
+        main,                                                                         \
+        nnz,                                                                          \
+        m,                                                                            \
+        n,                                                                            \
+        batch_count_C,                                                                \
+        batch_stride_A,                                                               \
+        ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),                 \
+        coo_row_ind,                                                                  \
+        coo_col_ind,                                                                  \
+        coo_val,                                                                      \
+        dense_B,                                                                      \
+        ldb,                                                                          \
+        batch_stride_B,                                                               \
+        dense_C,                                                                      \
+        ldc,                                                                          \
+        batch_stride_C,                                                               \
+        order_C,                                                                      \
+        descr->base,                                                                  \
         handle->pointer_mode == rocsparse_pointer_mode_host);
 
-#define LAUNCH_COOMMNN_ATOMIC_REMAINDER_KERNEL(COOMMNN_DIM, WF_SIZE, TRANSB)    \
-    RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(                                         \
-        (rocsparse::coommnn_atomic_remainder<COOMMNN_DIM, WF_SIZE, TRANSB, T>), \
-        dim3((nnz - 1) / COOMMNN_DIM + 1, batch_count_C),                       \
-        dim3(COOMMNN_DIM),                                                      \
-        0,                                                                      \
-        handle->stream,                                                         \
-        conj_A,                                                                 \
-        conj_B,                                                                 \
-        main,                                                                   \
-        n,                                                                      \
-        nnz,                                                                    \
-        batch_stride_A,                                                         \
-        ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),           \
-        coo_row_ind,                                                            \
-        coo_col_ind,                                                            \
-        coo_val,                                                                \
-        dense_B,                                                                \
-        ldb,                                                                    \
-        batch_stride_B,                                                         \
-        dense_C,                                                                \
-        ldc,                                                                    \
-        batch_stride_C,                                                         \
-        order_C,                                                                \
-        descr->base,                                                            \
+#define LAUNCH_COOMMNN_ATOMIC_REMAINDER_KERNEL(COOMMNN_DIM, WF_SIZE, TRANSB)          \
+    RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(                                               \
+        (rocsparse::coommnn_atomic_remainder<COOMMNN_DIM, WF_SIZE, TRANSB, T>),       \
+        dim3((nnz - 1) / COOMMNN_DIM + 1, get_grid_size_y<I>(handle, batch_count_C)), \
+        dim3(COOMMNN_DIM),                                                            \
+        0,                                                                            \
+        handle->stream,                                                               \
+        conj_A,                                                                       \
+        conj_B,                                                                       \
+        main,                                                                         \
+        m,                                                                            \
+        n,                                                                            \
+        nnz,                                                                          \
+        batch_count_C,                                                                \
+        batch_stride_A,                                                               \
+        ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),                 \
+        coo_row_ind,                                                                  \
+        coo_col_ind,                                                                  \
+        coo_val,                                                                      \
+        dense_B,                                                                      \
+        ldb,                                                                          \
+        batch_stride_B,                                                               \
+        dense_C,                                                                      \
+        ldc,                                                                          \
+        batch_stride_C,                                                               \
+        order_C,                                                                      \
+        descr->base,                                                                  \
         handle->pointer_mode == rocsparse_pointer_mode_host);
 
     template <uint32_t BLOCKSIZE,
@@ -365,14 +370,16 @@ namespace rocsparse
             {
                 RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(
                     (rocsparse::coommtn_atomic_main<256, false, T>),
-                    dim3((nnz - 1) / 256 + 1, n, batch_count_C),
+                    dim3((nnz - 1) / 256 + 1, n, get_grid_size_z<I>(handle, batch_count_C)),
                     dim3(256),
                     0,
                     handle->stream,
                     conj_A,
                     conj_B,
                     nnz,
+                    m,
                     n,
+                    batch_count_C,
                     batch_stride_A,
                     ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),
                     coo_row_ind,
@@ -396,14 +403,16 @@ namespace rocsparse
             {
                 RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(
                     (rocsparse::coommtn_atomic_main<256, true, T>),
-                    dim3((nnz - 1) / 256 + 1, n, batch_count_C),
+                    dim3((nnz - 1) / 256 + 1, n, get_grid_size_z<I>(handle, batch_count_C)),
                     dim3(256),
                     0,
                     handle->stream,
                     conj_A,
                     conj_B,
                     nnz,
+                    m,
                     n,
+                    batch_count_C,
                     batch_stride_A,
                     ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),
                     coo_row_ind,
@@ -484,8 +493,12 @@ INSTANTIATE(rocsparse_double_complex,
 // Mixed Precisions
 INSTANTIATE(float, int32_t, _Float16, _Float16, float);
 INSTANTIATE(float, int64_t, _Float16, _Float16, float);
+INSTANTIATE(float, int32_t, _Float16, _Float16, _Float16);
+INSTANTIATE(float, int64_t, _Float16, _Float16, _Float16);
 INSTANTIATE(float, int32_t, rocsparse_bfloat16, rocsparse_bfloat16, float);
 INSTANTIATE(float, int64_t, rocsparse_bfloat16, rocsparse_bfloat16, float);
+INSTANTIATE(float, int32_t, rocsparse_bfloat16, rocsparse_bfloat16, rocsparse_bfloat16);
+INSTANTIATE(float, int64_t, rocsparse_bfloat16, rocsparse_bfloat16, rocsparse_bfloat16);
 INSTANTIATE(int32_t, int32_t, int8_t, int8_t, int32_t);
 INSTANTIATE(int32_t, int64_t, int8_t, int8_t, int32_t);
 INSTANTIATE(float, int32_t, int8_t, int8_t, float);

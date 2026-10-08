@@ -1,4 +1,4 @@
-// Copyright (C) 2022 - 2023 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2022 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -243,9 +243,11 @@ void build_stockham_function_pool(CompileQueue& queue)
         std::vector<unsigned int> factors;
         std::copy(i.second.factors.begin(), i.second.factors.end(), std::back_inserter(factors));
 
-        StockhamGeneratorSpecs specs{factors,
+        StockhamGeneratorSpecs specs{KIntType::U32,
+                                     factors,
                                      {},
-                                     {static_cast<unsigned int>(precision)},
+                                     static_cast<unsigned int>(precision),
+                                     get_curr_gcn_arch_name(),
                                      static_cast<unsigned int>(i.second.workgroup_size),
                                      PrintScheme(scheme)};
         specs.threads_per_transform = i.second.threads_per_transform[0];
@@ -346,30 +348,41 @@ void build_realcomplex(CompileQueue& queue)
             {
                 for(size_t dim : {1, 2, 3})
                 {
-                    for(bool Ndiv4 : {true, false})
+                    for(size_t lensz = dim; lensz <= 3; lensz++)
                     {
-                        // standalone even-length kernels may be
-                        // first/last in the plan, so allow for
-                        // callbacks
-                        for(auto cbtype : {CallbackType::NONE, CallbackType::USER_LOAD_STORE})
+                        for(bool Ndiv4 : {true, false})
                         {
-                            // r2c may have planar output, c2r may have planar input
-                            auto inArrayType  = (scheme == CS_KERNEL_CMPLX_TO_R && planar)
-                                                    ? rocfft_array_type_complex_planar
-                                                    : rocfft_array_type_complex_interleaved;
-                            auto outArrayType = (scheme == CS_KERNEL_R_TO_CMPLX && planar)
-                                                    ? rocfft_array_type_complex_planar
-                                                    : rocfft_array_type_complex_interleaved;
+                            // standalone even-length kernels may be
+                            // first/last in the plan, so allow for
+                            // callbacks
+                            for(auto cbtype : {CallbackType::NONE, CallbackType::USER_LOAD_STORE})
+                            {
+                                // r2c may have planar output, c2r may have planar input
+                                auto inArrayType  = (scheme == CS_KERNEL_CMPLX_TO_R && planar)
+                                                        ? rocfft_array_type_complex_planar
+                                                        : rocfft_array_type_complex_interleaved;
+                                auto outArrayType = (scheme == CS_KERNEL_R_TO_CMPLX && planar)
+                                                        ? rocfft_array_type_complex_planar
+                                                        : rocfft_array_type_complex_interleaved;
 
-                            RealComplexEvenSpecs specs{
-                                {scheme, dim, precision, inArrayType, outArrayType, cbtype, {}, {}},
-                                Ndiv4};
-                            auto kernel_name = realcomplex_even_rtc_kernel_name(specs);
-                            std::function<std::string(const std::string&)> generate_src
-                                = [=](const std::string& kernel_name) -> std::string {
-                                return realcomplex_even_rtc(kernel_name, specs);
-                            };
-                            queue.push({kernel_name, generate_src});
+                                RealComplexEvenSpecs specs{{KIntType::U32,
+                                                            scheme,
+                                                            dim,
+                                                            lensz,
+                                                            precision,
+                                                            inArrayType,
+                                                            outArrayType,
+                                                            cbtype,
+                                                            {},
+                                                            {}},
+                                                           Ndiv4};
+                                auto kernel_name = realcomplex_even_rtc_kernel_name(specs);
+                                std::function<std::string(const std::string&)> generate_src
+                                    = [=](const std::string& kernel_name) -> std::string {
+                                    return realcomplex_even_rtc(kernel_name, specs);
+                                };
+                                queue.push({kernel_name, generate_src});
+                            }
                         }
                     }
                 }
@@ -384,20 +397,25 @@ void build_realcomplex(CompileQueue& queue)
                                         ? rocfft_array_type_complex_planar
                                         : rocfft_array_type_complex_interleaved;
 
-                RealComplexEvenTransposeSpecs specs{{scheme,
-                                                     static_cast<size_t>(1),
-                                                     precision,
-                                                     inArrayType,
-                                                     outArrayType,
-                                                     CallbackType::NONE,
-                                                     {},
-                                                     {}}};
-                auto kernel_name = realcomplex_even_transpose_rtc_kernel_name(specs);
-                std::function<std::string(const std::string&)> generate_src
-                    = [=](const std::string& kernel_name) -> std::string {
-                    return realcomplex_even_transpose_rtc(kernel_name, specs);
-                };
-                queue.push({kernel_name, generate_src, ""});
+                for(size_t lensz = 1; lensz <= 3; lensz++)
+                {
+                    RealComplexEvenTransposeSpecs specs{{KIntType::U32,
+                                                         scheme,
+                                                         static_cast<size_t>(1),
+                                                         lensz,
+                                                         precision,
+                                                         inArrayType,
+                                                         outArrayType,
+                                                         CallbackType::NONE,
+                                                         {},
+                                                         {}}};
+                    auto kernel_name = realcomplex_even_transpose_rtc_kernel_name(specs);
+                    std::function<std::string(const std::string&)> generate_src
+                        = [=](const std::string& kernel_name) -> std::string {
+                        return realcomplex_even_transpose_rtc(kernel_name, specs);
+                    };
+                    queue.push({kernel_name, generate_src, ""});
+                }
             }
         }
     }
@@ -415,10 +433,10 @@ void build_twiddle(CompileQueue& queue)
     {
         for(auto type : twiddle_kernel_types)
         {
-            auto kernel_name = twiddle_rtc_kernel_name(type, precision);
+            auto kernel_name = twiddle_rtc_kernel_name(type, precision, KIntType::U32);
             std::function<std::string(const std::string&)> generate_src
                 = [=](const std::string& kernel_name) -> std::string {
-                return twiddle_rtc(kernel_name, type, precision);
+                return twiddle_rtc(kernel_name, KIntType::U32, type, precision);
             };
             queue.push({kernel_name, generate_src, ""});
         }
@@ -490,7 +508,7 @@ void solution_kernel_combo(FMKey                             kernel_key,
         {
             placement_range = {rocfft_placement_inplace, rocfft_placement_notinplace};
         }
-        // sbcc can be used in 2D, 3D, for L1D, it's still psuedo-2D
+        // sbcc can be used in 2D, 3D, for L1D, it's still pseudo-2D
         if(static_dim == 0)
         {
             static_dims_range = {2, 3};
@@ -661,9 +679,11 @@ void build_solution_kernels(CompileQueue& queue)
                         return;
                 }
 
-                StockhamGeneratorSpecs specs{factors,
+                StockhamGeneratorSpecs specs{KIntType::U32,
+                                             factors,
                                              {},
-                                             {static_cast<unsigned int>(precision)},
+                                             static_cast<unsigned int>(precision),
+                                             get_curr_gcn_arch_name(),
                                              static_cast<unsigned int>(config.workgroup_size),
                                              PrintScheme(scheme)};
                 specs.threads_per_transform = config.threads_per_transform[0];
@@ -758,9 +778,6 @@ int main(int argc, char** argv)
     // an in-memory DB which will always be empty
     rocfft_setenv("ROCFFT_RTC_SYS_CACHE_PATH", ":memory:");
 
-    // tell RTC where the compile helper is
-    rocfft_setenv("ROCFFT_RTC_PROCESS_HELPER", rtc_helper.c_str());
-
     RTCCache::single = std::make_unique<RTCCache>();
 
     RTCCache::single->enable_write_mostly();
@@ -772,7 +789,7 @@ int main(int argc, char** argv)
     threads.reserve(NUM_THREADS);
     for(size_t i = 0; i < NUM_THREADS; ++i)
     {
-        threads.emplace_back([&queue, &gpu_archs]() {
+        threads.emplace_back([&queue, &gpu_archs, &rtc_helper]() {
             while(true)
             {
                 auto item = queue.pop();
@@ -783,15 +800,21 @@ int main(int argc, char** argv)
                 {
                     if(item.sol_arch_name.empty())
                     {
-                        RTCCache::cached_compile(
-                            item.kernel_name, gpu_arch, item.generate_src, generator_sum());
+                        RTCCache::cached_compile(item.kernel_name,
+                                                 gpu_arch,
+                                                 item.generate_src,
+                                                 generator_sum(),
+                                                 rtc_helper);
                     }
                     else if(gpu_arch.find(item.sol_arch_name) != std::string::npos)
                     {
                         // std::cout << "arch: " << gpu_arch
                         //           << ", solution-kernel: " << item.kernel_name << std::endl;
-                        RTCCache::cached_compile(
-                            item.kernel_name, gpu_arch, item.generate_src, generator_sum());
+                        RTCCache::cached_compile(item.kernel_name,
+                                                 gpu_arch,
+                                                 item.generate_src,
+                                                 generator_sum(),
+                                                 rtc_helper);
                     }
                 }
             }

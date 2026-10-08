@@ -1,55 +1,89 @@
 // Copyright © Advanced Micro Devices, Inc., or its affiliates.
-// SPDX-License-Identifier:  MIT
+// SPDX-License-Identifier: MIT
+
+/**
+ * @file ConvolutionDgradAttributes.hpp
+ * @brief Attributes for convolution data gradient (backward data) operations
+ *
+ * This file defines the ConvDgradAttributes class for configuring backward
+ * convolution operations that compute the gradient with respect to input data.
+ */
+
 #pragma once
 
 #include "Attributes.hpp"
 #include "TensorAttributes.hpp"
 #include <hipdnn_frontend/Types.hpp>
-#include <hipdnn_sdk/data_objects/convolution_bwd_attributes_generated.h>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 
-namespace hipdnn_frontend
+namespace hipdnn_frontend::graph
 {
-namespace graph
-{
+
+/**
+ * @class ConvDgradAttributes
+ * @brief Configuration for convolution data gradient (backward data) operations
+ *
+ * ConvDgradAttributes specifies the parameters for computing the gradient of
+ * the convolution with respect to the input data (dgrad operation):
+ * dx = conv_bwd(dy, w)
+ *
+ * @code{.cpp}
+ * auto dx = graph.conv_dgrad(dy, w, ConvDgradAttributes()
+ *              .set_padding({1, 1})
+ *              .set_stride({1, 1}));
+ * // Required before validation/build; strides may be omitted and inferred.
+ * dx->set_dim({N, C, H, W});
+ * @endcode
+ *
+ * @see Graph::conv_dgrad(), ConvFpropAttributes, ConvWgradAttributes
+ */
 class ConvDgradAttributes : public Attributes<ConvDgradAttributes>
 {
 public:
+    ConvDgradAttributes() = default;
+
+    /// Input tensor identifiers
     enum class InputNames
     {
-        DY = 0, // Gradient of output tensor
-        W = 1 // Weights/filter tensor
+        DY = 0, ///< Gradient of output tensor
+        W = 1 ///< Weight/filter tensor
     };
-    typedef InputNames input_names; // NOLINT(readability-identifier-naming)
+    typedef InputNames input_names; ///< @brief Type alias for InputNames
 
+    /// Output tensor identifiers
     enum class OutputNames
     {
-        DX = 0 // Gradient of input tensor
+        DX = 0 ///< Gradient of input tensor
     };
-    typedef OutputNames output_names; // NOLINT(readability-identifier-naming)
+    typedef OutputNames output_names; ///< @brief Type alias for OutputNames
 
-    std::unordered_map<InputNames, std::shared_ptr<TensorAttributes>> inputs;
-    std::unordered_map<OutputNames, std::shared_ptr<TensorAttributes>> outputs;
+    std::unordered_map<InputNames, std::shared_ptr<TensorAttributes>> inputs; ///< Input tensors
+    std::unordered_map<OutputNames, std::shared_ptr<TensorAttributes>> outputs; ///< Output tensors
 
-    std::vector<int64_t> pre_padding; // NOLINT(readability-identifier-naming)
-    std::vector<int64_t> post_padding; // NOLINT(readability-identifier-naming)
-    std::vector<int64_t> stride;
-    std::vector<int64_t> dilation;
-    // NOLINTNEXTLINE(readability-identifier-naming)
+    // NOLINTBEGIN(readability-identifier-naming)
+    std::vector<int64_t> pre_padding; ///< Padding before convolution (per spatial dim)
+    std::vector<int64_t> post_padding; ///< Padding after convolution (per spatial dim)
+    std::vector<int64_t> stride; ///< Stride (per spatial dim)
+    std::vector<int64_t> dilation; ///< Dilation (per spatial dim)
+    /// Convolution mode (default: CROSS_CORRELATION)
     ConvolutionMode math_mode = ConvolutionMode::CROSS_CORRELATION;
+    // NOLINTEND(readability-identifier-naming)
 
+    /// @brief Get the output gradient tensor
     // NOLINTNEXTLINE(readability-identifier-naming)
     std::shared_ptr<TensorAttributes> get_dy() const
     {
         return getInput(InputNames::DY);
     }
+    /// @brief Get the weight/filter tensor
     // NOLINTNEXTLINE(readability-identifier-naming)
     std::shared_ptr<TensorAttributes> get_w() const
     {
         return getInput(InputNames::W);
     }
+    /// @brief Get the input gradient tensor
     // NOLINTNEXTLINE(readability-identifier-naming)
     std::shared_ptr<TensorAttributes> get_dx() const
     {
@@ -87,11 +121,17 @@ public:
     {
         return setOutput(OutputNames::DX, value);
     }
+
+    /**
+     * @brief Set symmetric padding (same for pre and post)
+     * @param padding Padding values for each spatial dimension
+     * @return Reference to this for method chaining
+     */
     // NOLINTNEXTLINE(readability-identifier-naming)
-    ConvDgradAttributes& set_padding(std::vector<int64_t> padding)
+    ConvDgradAttributes& set_padding(const std::vector<int64_t>& padding)
     {
         set_pre_padding(padding);
-        set_post_padding(std::move(padding));
+        set_post_padding(padding);
         return *this;
     }
 
@@ -123,6 +163,11 @@ public:
         return *this;
     }
 
+    /**
+     * @brief Set convolution stride
+     * @param strideVals Stride values for each spatial dimension
+     * @return Reference to this for method chaining
+     */
     // NOLINTNEXTLINE(readability-identifier-naming)
     ConvDgradAttributes& set_stride(const std::vector<int64_t>& strideVals)
     {
@@ -137,6 +182,11 @@ public:
         return *this;
     }
 
+    /**
+     * @brief Set filter dilation
+     * @param dilationVals Dilation values for each spatial dimension
+     * @return Reference to this for method chaining
+     */
     // NOLINTNEXTLINE(readability-identifier-naming)
     ConvDgradAttributes& set_dilation(const std::vector<int64_t>& dilationVals)
     {
@@ -158,7 +208,7 @@ public:
         return *this;
     }
 
-    // Getters for convolution parameters
+    /// @brief Get pre-convolution padding
     // NOLINTNEXTLINE(readability-identifier-naming)
     const std::vector<int64_t>& get_pre_padding() const
     {
@@ -185,65 +235,24 @@ public:
         return math_mode;
     }
 
-    flatbuffers::Offset<hipdnn_sdk::data_objects::ConvolutionBwdAttributes>
-        pack_attributes(flatbuffers::FlatBufferBuilder& builder) const // NOLINT
+    /**
+     * @brief Custom CRTP hook for matching convolution attributes logically.
+     */
+    bool logicallyEqualsImpl(const ConvDgradAttributes& other) const
     {
-        return hipdnn_sdk::data_objects::CreateConvolutionBwdAttributesDirect(builder,
-                                                                              get_dy()->get_uid(),
-                                                                              get_w()->get_uid(),
-                                                                              get_dx()->get_uid(),
-                                                                              &pre_padding,
-                                                                              &post_padding,
-                                                                              &stride,
-                                                                              &dilation,
-                                                                              toSdkType(math_mode));
+        return (this->pre_padding == other.pre_padding)
+               && (this->post_padding == other.post_padding) && (this->stride == other.stride)
+               && (this->dilation == other.dilation) && (this->math_mode == other.math_mode);
     }
 
-private:
-    std::shared_ptr<TensorAttributes> getInput(InputNames name) const
+    /**
+     * @brief Custom CRTP hook for matching operational configurations strictly.
+     */
+    bool strictEqualsImpl(const ConvDgradAttributes& other) const
     {
-        auto it = inputs.find(name);
-        if(it != inputs.end())
-        {
-            return it->second;
-        }
-        return nullptr;
-    }
-
-    std::shared_ptr<TensorAttributes> getOutput(OutputNames name) const
-    {
-        auto it = outputs.find(name);
-        if(it != outputs.end())
-        {
-            return it->second;
-        }
-        return nullptr;
-    }
-
-    ConvDgradAttributes& setInput(InputNames name, const std::shared_ptr<TensorAttributes>& value)
-    {
-        inputs[name] = value;
-        return *this;
-    }
-
-    ConvDgradAttributes& setInput(InputNames name, std::shared_ptr<TensorAttributes>&& value)
-    {
-        inputs[name] = std::move(value);
-        return *this;
-    }
-
-    ConvDgradAttributes& setOutput(OutputNames name, const std::shared_ptr<TensorAttributes>& value)
-    {
-        outputs[name] = value;
-        return *this;
-    }
-
-    ConvDgradAttributes& setOutput(OutputNames name, std::shared_ptr<TensorAttributes>&& value)
-    {
-        outputs[name] = std::move(value);
-        return *this;
+        return logicallyEqualsImpl(other);
     }
 };
-typedef ConvDgradAttributes Conv_dgrad_attributes;
-}
-}
+
+typedef ConvDgradAttributes Conv_dgrad_attributes; ///< @brief Compatibility alias
+} // namespace hipdnn_frontend::graph

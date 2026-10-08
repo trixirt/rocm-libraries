@@ -28,6 +28,7 @@
 
 #include <miopen/db_path.hpp>
 #include <miopen/handle.hpp>
+#include <miopen/stringutils.hpp>
 #if MIOPEN_ENABLE_SQLITE
 #include <miopen/sqlite_db.hpp>
 #endif
@@ -77,26 +78,27 @@ MIOPEN_EXPORT extern bool
 
 } // namespace debug
 
-struct MIOPEN_INTERNALS_EXPORT ExecutionContext
+struct ExecutionContext
 {
     // Solution-specific
     std::string general_compile_options;
 
     // Operation modes & environment
-    bool do_search               = false;
-    bool db_update               = false;
-    bool use_asm_kernels         = false;
-    bool use_hip_kernels         = true;
-    bool use_opencl_convolutions = true;
-    rocm_meta_version rmv        = rocm_meta_version::Default;
-    bool disable_search_enforce  = false;
+    bool do_search              = false;
+    bool db_update              = false;
+    bool use_asm_kernels        = false;
+    bool use_hip_kernels        = true;
+    rocm_meta_version rmv       = rocm_meta_version::Default;
+    bool disable_search_enforce = false;
     // Skip perf-db reads and use the default performance configuration. This is used, for example,
     // to optimize the getWorkspaceSize() calls for speed. This specific optimization is correct
     // because Solvers shall be written so that the required workspace size does not depend on the
     // performance config.
-    bool disable_perfdb_access      = false;
-    bool use_dynamic_solutions_only = false;
-    bool is_for_generic_search      = false;
+    bool disable_perfdb_access              = false;
+    bool use_dynamic_solutions_only         = false;
+    bool is_for_generic_search              = false;
+    mutable float generic_search_worst_time = std::numeric_limits<float>::max();
+    mutable float generic_search_best_time  = std::numeric_limits<float>::max();
 
     inline const Handle& GetStream() const { return *stream; }
     inline void SetStream(const Handle* stream_) { stream = stream_; }
@@ -104,11 +106,11 @@ struct MIOPEN_INTERNALS_EXPORT ExecutionContext
     ExecutionContext() { DetectRocm(); }
     ExecutionContext(const Handle* stream_) : stream(stream_) { DetectRocm(); }
 
-    virtual ~ExecutionContext()               = default;
-    ExecutionContext(const ExecutionContext&) = default;
-    ExecutionContext(ExecutionContext&&)      = default;
+    virtual ~ExecutionContext()                          = default;
+    ExecutionContext(const ExecutionContext&)            = default;
+    ExecutionContext(ExecutionContext&&)                 = default;
     ExecutionContext& operator=(const ExecutionContext&) = default;
-    ExecutionContext& operator=(ExecutionContext&&) = default;
+    ExecutionContext& operator=(ExecutionContext&&)      = default;
 
 #if MIOPEN_EMBED_DB
     fs::path GetPerfDbPathEmbed(std::string_view prefix = "") const
@@ -137,6 +139,7 @@ struct MIOPEN_INTERNALS_EXPORT ExecutionContext
                 MIOPEN_LOG_I2("inexact embedded perf database search");
                 const auto db_id        = GetStream().GetTargetProperties().DbId();
                 const int real_cu_count = GetStream().GetMaxComputeUnits();
+                const int target_cu     = GetSysDbSelectionCu(db_id, real_cu_count);
                 int closest_cu          = std::numeric_limits<int>::max();
                 fs::path best_path;
                 for(auto const& entry : miopen_data())
@@ -145,7 +148,8 @@ struct MIOPEN_INTERNALS_EXPORT ExecutionContext
                     const auto fname = entry.first.stem().string();
                     MIOPEN_LOG_I2("Testing embedded file:" << fname);
                     const auto& filepath = pdb_path / fname;
-                    if(filepath.extension() == ext &&
+                    // fname carries the full ".db.txt"; extension() would only see ".txt".
+                    if(EndsWith(fname, std::string{ext}) &&
                        fname.rfind(db_id, 0) == 0) // starts with db_id
                     {
                         MIOPEN_LOG_I2("Checking embedded perf db file: " << fname);
@@ -165,11 +169,11 @@ struct MIOPEN_INTERNALS_EXPORT ExecutionContext
                             continue;
                         }
 
-                        if(abs(cur_count - real_cu_count) < (closest_cu))
+                        if(abs(cur_count - target_cu) < (closest_cu))
                         {
                             MIOPEN_LOG_I2("Updating best candidate to: " << filepath);
                             best_path  = filepath;
-                            closest_cu = abs(cur_count - real_cu_count);
+                            closest_cu = abs(cur_count - target_cu);
                         }
                     }
                 }
@@ -206,6 +210,7 @@ struct MIOPEN_INTERNALS_EXPORT ExecutionContext
                 MIOPEN_LOG_I2("inexact perf database search");
                 const auto db_id        = GetStream().GetTargetProperties().DbId();
                 const int real_cu_count = GetStream().GetMaxComputeUnits();
+                const int target_cu     = GetSysDbSelectionCu(db_id, real_cu_count);
                 if(fs::is_directory(pdb_path))
                 {
                     MIOPEN_LOG_I2("Iterating over perf db directory " << pdb_path);
@@ -218,7 +223,10 @@ struct MIOPEN_INTERNALS_EXPORT ExecutionContext
                     for(auto const& filepath : contents)
                     {
                         const auto fname = filepath.stem().string();
-                        if(fs::is_regular_file(filepath) && filepath.extension() == ext &&
+                        // extension() returns only the final component (e.g. ".txt"), so it
+                        // can't match the multi-dot ".db.txt"; match the full filename.
+                        if(fs::is_regular_file(filepath) &&
+                           EndsWith(filepath.filename().string(), std::string{ext}) &&
                            fname.starts_with(db_id))
                         {
                             MIOPEN_LOG_I2("Checking perf db file: " << fname);
@@ -243,11 +251,11 @@ struct MIOPEN_INTERNALS_EXPORT ExecutionContext
                                 continue;
                             }
 
-                            if(abs(cur_count - real_cu_count) < (closest_cu))
+                            if(abs(cur_count - target_cu) < (closest_cu))
                             {
                                 MIOPEN_LOG_I2("Updating best candidate to: " << filepath);
                                 best_path  = filepath;
-                                closest_cu = abs(cur_count - real_cu_count);
+                                closest_cu = abs(cur_count - target_cu);
                             }
                         }
                     }
@@ -266,6 +274,9 @@ struct MIOPEN_INTERNALS_EXPORT ExecutionContext
 
     fs::path GetPerfDbPath(std::string_view prefix = "") const
     {
+        // An empty system path disables the system perf-db; the user perf-db is unaffected.
+        if(IsSystemDbDisabled())
+            return "";
 #if MIOPEN_EMBED_DB
         return GetPerfDbPathEmbed(prefix);
 #else
@@ -295,7 +306,7 @@ struct MIOPEN_INTERNALS_EXPORT ExecutionContext
 private:
     const Handle* stream = nullptr;
 
-    void DetectRocm();
+    MIOPEN_INTERNALS_EXPORT void DetectRocm();
 };
 
 struct [[deprecated]] ConvolutionContext : ExecutionContext

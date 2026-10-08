@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2018-2023, Advanced Micro Devices, Inc. All rights reserved.
 
 int run_gemm_test(int argc, char* argv[])
 {
@@ -50,6 +50,8 @@ int run_gemm_test(int argc, char* argv[])
         const auto gemmPtrs =
             ck::tensor_operation::device::instance::DeviceOperationInstanceFactory<
                 DeviceOp>::GetInstances();
+        std::cout << "found " << gemmPtrs.size() << " instances" << std::endl;
+
         ck::index_t num_instance = 0;
         for(auto& gemmPtr : gemmPtrs)
         {
@@ -69,12 +71,6 @@ int run_gemm_test(int argc, char* argv[])
                     num_instance++;
                 }
             }
-        }
-
-        if(instance_index != -1)
-        {
-            std::cout << "TestGemm_instance (" << instance_index << "/" << num_instance
-                      << "): " << (pass ? "Passed" : "Failed") << std::endl;
         }
 
         return pass;

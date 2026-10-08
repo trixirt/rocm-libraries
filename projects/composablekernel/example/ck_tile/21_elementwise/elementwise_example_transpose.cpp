@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2025, Advanced Micro Devices, Inc. All rights reserved.
 
 #include "ck_tile/host.hpp"
 #include "ck_tile/ops/elementwise.hpp"
@@ -168,7 +168,7 @@ int main(int argc, char* argv[])
         return std::visit(
             [&](auto&& dt) -> int {
                 using DataType = std::decay_t<decltype(dt)>;
-                return run<DataType>(arg_parser);
+                return !run<DataType>(arg_parser);
             },
             prec_variant);
     }

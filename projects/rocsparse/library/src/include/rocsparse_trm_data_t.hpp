@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
- * Copyright (C) 2025 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,12 +23,14 @@
  * ************************************************************************ */
 
 #pragma once
-
+#include "rocsparse-types.h"
 #include "rocsparse_control.hpp"
+#include "rocsparse_datatype_utils.hpp"
 #include "rocsparse_indextype_utils.hpp"
 #include "rocsparse_pivot_info_t.hpp"
 #include "rocsparse_trm_info.hpp"
 #include <memory>
+
 namespace rocsparse
 {
     template <typename I, typename J, typename T>
@@ -44,6 +46,20 @@ namespace rocsparse
                                   rocsparse::pivot_info_t*  pivot_info,
                                   void*                     temp_buffer);
 
+    rocsparse_status gtrm_analysis(rocsparse_handle          handle,
+                                   rocsparse_operation       trans,
+                                   int64_t                   m,
+                                   int64_t                   nnz,
+                                   const rocsparse_mat_descr descr,
+                                   rocsparse_datatype        csr_val_datatype,
+                                   const void*               csr_val,
+                                   rocsparse_indextype       csr_row_ptr_indextype,
+                                   const void*               csr_row_ptr,
+                                   rocsparse_indextype       csr_col_ind_indextype,
+                                   const void*               csr_col_ind,
+                                   rocsparse::trm_info_t*    info,
+                                   rocsparse::pivot_info_t*  pivot_info,
+                                   void*                     temp_buffer);
 }
 
 namespace rocsparse
@@ -66,11 +82,84 @@ namespace rocsparse
 
         rocsparse::trm_info_t* get(rocsparse_operation operation, rocsparse_fill_mode fill_mode);
 
+        const rocsparse::trm_info_t* get(rocsparse_operation operation,
+                                         rocsparse_fill_mode fill_mode) const;
+
         void set(rocsparse_operation    operation,
                  rocsparse_fill_mode    fill_mode,
                  rocsparse::trm_info_t* trm_info);
 
         rocsparse_indextype get_indextype_J() const;
+
+        rocsparse::trm_info_t* create(rocsparse_handle          handle,
+                                      rocsparse_operation       trans,
+                                      int64_t                   batch_count,
+                                      int64_t                   m,
+                                      int64_t                   nnz,
+                                      const rocsparse_mat_descr descr,
+                                      rocsparse_datatype        csr_val_datatype,
+                                      const void*               csr_val,
+                                      int64_t                   csr_val_stride,
+                                      rocsparse_indextype       csr_row_ptr_indextype,
+                                      const void*               csr_row_ptr,
+                                      int64_t                   csr_row_ptr_stride,
+                                      rocsparse_indextype       csr_col_ind_indextype,
+                                      const void*               csr_col_ind,
+                                      int64_t                   csr_col_ind_stride,
+                                      void*                     temp_buffer)
+        {
+            rocsparse::trm_info_t* trm_info = new rocsparse::trm_info_t();
+            // Perform analysis
+
+            THROW_IF_ROCSPARSE_ERROR(rocsparse::gtrm_analysis(handle,
+                                                              trans,
+                                                              m,
+                                                              nnz,
+                                                              descr,
+                                                              csr_val_datatype,
+                                                              csr_val,
+                                                              csr_row_ptr_indextype,
+                                                              csr_row_ptr,
+                                                              csr_col_ind_indextype,
+                                                              csr_col_ind,
+                                                              trm_info,
+                                                              this,
+                                                              temp_buffer));
+            return trm_info;
+        }
+
+        rocsparse::trm_info_t* create(rocsparse_handle          handle,
+                                      rocsparse_operation       trans,
+                                      int64_t                   m,
+                                      int64_t                   nnz,
+                                      const rocsparse_mat_descr descr,
+                                      rocsparse_datatype        csr_val_datatype,
+                                      const void*               csr_val,
+                                      rocsparse_indextype       csr_row_ptr_indextype,
+                                      const void*               csr_row_ptr,
+                                      rocsparse_indextype       csr_col_ind_indextype,
+                                      const void*               csr_col_ind,
+                                      void*                     temp_buffer)
+        {
+            rocsparse::trm_info_t* trm_info = new rocsparse::trm_info_t();
+            // Perform analysis
+
+            THROW_IF_ROCSPARSE_ERROR(rocsparse::gtrm_analysis(handle,
+                                                              trans,
+                                                              m,
+                                                              nnz,
+                                                              descr,
+                                                              csr_val_datatype,
+                                                              csr_val,
+                                                              csr_row_ptr_indextype,
+                                                              csr_row_ptr,
+                                                              csr_col_ind_indextype,
+                                                              csr_col_ind,
+                                                              trm_info,
+                                                              this,
+                                                              temp_buffer));
+            return trm_info;
+        }
 
         template <typename I, typename J, typename T>
         rocsparse::trm_info_t* create(rocsparse_handle          handle,
@@ -83,19 +172,55 @@ namespace rocsparse
                                       const J*                  csr_col_ind,
                                       void*                     temp_buffer)
         {
-            rocsparse::trm_info_t* trm_info = new rocsparse::trm_info_t();
-            THROW_IF_ROCSPARSE_ERROR(rocsparse::trm_analysis(handle,
-                                                             trans,
-                                                             m,
-                                                             nnz,
-                                                             descr,
-                                                             csr_val,
-                                                             csr_row_ptr,
-                                                             csr_col_ind,
-                                                             trm_info,
-                                                             this,
-                                                             temp_buffer));
-            return trm_info;
+            return create(handle,
+                          trans,
+                          m,
+                          nnz,
+                          descr,
+                          rocsparse::get_datatype<T>(),
+                          csr_val,
+                          rocsparse::get_indextype<I>(),
+                          csr_row_ptr,
+                          rocsparse::get_indextype<J>(),
+                          csr_col_ind,
+                          temp_buffer);
+        }
+
+        rocsparse::trm_info_t* create(rocsparse_handle          handle,
+                                      rocsparse_operation       trans,
+                                      int64_t                   m,
+                                      int64_t                   n,
+                                      const rocsparse_mat_descr descr,
+                                      rocsparse_indextype       ell_col_ind_indextype,
+                                      const void*               ell_col_ind,
+                                      int64_t                   ell_width,
+                                      rocsparse_index_base      idx_base,
+                                      size_t                    buffer_size,
+                                      void*                     temp_buffer);
+
+        template <typename I>
+        rocsparse::trm_info_t* create(rocsparse_handle          handle,
+                                      rocsparse_operation       trans,
+                                      I                         m,
+                                      I                         n,
+                                      const rocsparse_mat_descr descr,
+                                      const I*                  ell_col_ind,
+                                      int64_t                   ell_width,
+                                      rocsparse_index_base      idx_base,
+                                      size_t                    buffer_size,
+                                      void*                     temp_buffer)
+        {
+            return create(handle,
+                          trans,
+                          static_cast<int64_t>(m),
+                          static_cast<int64_t>(n),
+                          descr,
+                          rocsparse::get_indextype<I>(),
+                          ell_col_ind,
+                          ell_width,
+                          idx_base,
+                          buffer_size,
+                          temp_buffer);
         }
 
         template <typename... ARGS>
@@ -133,6 +258,74 @@ namespace rocsparse
                                   csr_val,
                                   csr_row_ptr,
                                   csr_col_ind,
+                                  temp_buffer);
+        }
+
+        rocsparse_status recreate(rocsparse_handle          handle,
+                                  rocsparse_operation       trans,
+                                  int64_t                   m,
+                                  int64_t                   nnz,
+                                  const rocsparse_mat_descr descr,
+                                  rocsparse_datatype        csr_val_datatype,
+                                  const void*               csr_val,
+                                  rocsparse_indextype       csr_row_ptr_indextype,
+                                  const void*               csr_row_ptr,
+                                  rocsparse_indextype       csr_col_ind_indextype,
+                                  const void*               csr_col_ind,
+                                  void*                     temp_buffer)
+        {
+            return this->recreate(trans,
+                                  descr->fill_mode,
+                                  handle,
+                                  trans,
+                                  m,
+                                  nnz,
+                                  descr,
+                                  csr_val_datatype,
+                                  csr_val,
+                                  csr_row_ptr_indextype,
+                                  csr_row_ptr,
+                                  csr_col_ind_indextype,
+                                  csr_col_ind,
+                                  temp_buffer);
+        }
+
+        rocsparse_status recreate(rocsparse_handle          handle,
+                                  rocsparse_operation       trans,
+                                  int64_t                   m,
+                                  int64_t                   n,
+                                  const rocsparse_mat_descr descr,
+                                  rocsparse_indextype       ell_col_ind_indextype,
+                                  const void*               ell_col_ind,
+                                  int64_t                   ell_width,
+                                  rocsparse_index_base      idx_base,
+                                  size_t                    buffer_size,
+                                  void*                     temp_buffer);
+
+        template <typename I>
+        rocsparse_status recreate(rocsparse_handle          handle,
+                                  rocsparse_operation       trans,
+                                  I                         m,
+                                  I                         n,
+                                  const rocsparse_mat_descr descr,
+                                  const I*                  ell_col_ind,
+                                  int64_t                   ell_width,
+                                  rocsparse_index_base      idx_base,
+                                  size_t                    buffer_size,
+                                  void*                     temp_buffer)
+        {
+            return this->recreate(trans,
+                                  descr->fill_mode,
+                                  handle,
+                                  trans,
+                                  static_cast<int64_t>(m),
+                                  static_cast<int64_t>(n),
+                                  descr,
+                                  rocsparse::get_indextype<I>(),
+                                  ell_col_ind,
+                                  ell_width,
+                                  idx_base,
+                                  buffer_size,
                                   temp_buffer);
         }
     };

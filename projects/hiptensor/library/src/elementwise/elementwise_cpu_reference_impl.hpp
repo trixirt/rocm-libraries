@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -157,30 +157,39 @@ namespace hiptensor
                         return false;
                     };
 
-                    auto outOffset = std::inner_product(
-                        indices.rbegin(), indices.rend(), std::rbegin(arg.mOutStrides[0]), 0);
-                    auto inOffset = std::inner_product(
-                        indices.rbegin(), indices.rend(), std::rbegin(arg.mInStrides[0]), 0);
+                    auto offsetOf = [&indices](auto const& strides) {
+                        return std::inner_product(
+                            indices.rbegin(), indices.rend(), std::rbegin(strides), 0);
+                    };
+
+                    // Each tensor carries its own strides over the shared iteration space, so
+                    // the offsets must be computed per input rather than reusing input 0's.
+                    auto                      outOffset = offsetOf(arg.mOutStrides[0]);
+                    std::array<int, NumInput> inOffsets;
+                    for(int i = 0; i < NumInput; i++)
+                    {
+                        inOffsets[i] = offsetOf(arg.mInStrides[i]);
+                    }
                     nextIndex();
 
                     // Perform sequence of unary, scale operations on input
                     if constexpr(NumInput == 1)
                     {
                         arg.mElementOp(arg.mOutput.At(ck::Number<0>{})[outOffset],
-                                       arg.mInput.At(ck::Number<0>{})[inOffset]);
+                                       arg.mInput.At(ck::Number<0>{})[inOffsets[0]]);
                     }
                     else if constexpr(NumInput == 2)
                     {
                         arg.mElementOp(arg.mOutput.At(ck::Number<0>{})[outOffset],
-                                       arg.mInput.At(ck::Number<0>{})[inOffset],
-                                       arg.mInput.At(ck::Number<1>{})[inOffset]);
+                                       arg.mInput.At(ck::Number<0>{})[inOffsets[0]],
+                                       arg.mInput.At(ck::Number<1>{})[inOffsets[1]]);
                     }
                     else if constexpr(NumInput == 3)
                     {
                         arg.mElementOp(arg.mOutput.At(ck::Number<0>{})[outOffset],
-                                       arg.mInput.At(ck::Number<0>{})[inOffset],
-                                       arg.mInput.At(ck::Number<1>{})[inOffset],
-                                       arg.mInput.At(ck::Number<2>{})[inOffset]);
+                                       arg.mInput.At(ck::Number<0>{})[inOffsets[0]],
+                                       arg.mInput.At(ck::Number<1>{})[inOffsets[1]],
+                                       arg.mInput.At(ck::Number<2>{})[inOffsets[2]]);
                     }
                     else
                     {
@@ -291,4 +300,3 @@ namespace hiptensor
     }
 
 } // namespace hiptensor
-

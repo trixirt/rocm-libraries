@@ -1,5 +1,5 @@
 /* ************************************************************************
- * Copyright (C) 2025 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -179,6 +179,28 @@ void _rocsparse_sptrsm_descr::set_compute_datatype(rocsparse_datatype value)
     this->m_compute_datatype = value;
 }
 
+#if defined(ROCSPARSE_WITH_DIAGONAL_SOLVE)
+rocsparse_solve_mode _rocsparse_sptrsm_descr::get_solve_mode() const
+{
+    return this->m_solve_mode;
+}
+
+void _rocsparse_sptrsm_descr::set_solve_mode(rocsparse_solve_mode value)
+{
+    this->m_solve_mode = value;
+}
+
+rocsparse_diagonal_modifier _rocsparse_sptrsm_descr::get_diagonal_modifier() const
+{
+    return this->m_diagonal_modifier;
+}
+
+void _rocsparse_sptrsm_descr::set_diagonal_modifier(rocsparse_diagonal_modifier value)
+{
+    this->m_diagonal_modifier = value;
+}
+#endif
+
 void _rocsparse_sptrsm_descr::set_scalar_alpha(const void* value)
 {
     this->m_scalar_alpha = value;
@@ -209,11 +231,13 @@ try
     ROCSPARSE_CHECKARG_POINTER(0, descr);
     *descr = new _rocsparse_sptrsm_descr();
     return rocsparse_status_success;
+    // LCOV_EXCL_START
 }
 catch(...)
 {
     RETURN_ROCSPARSE_EXCEPTION();
 }
+// LCOV_EXCL_STOP
 
 extern "C" rocsparse_status rocsparse_destroy_sptrsm_descr(rocsparse_sptrsm_descr descr)
 try
@@ -224,8 +248,10 @@ try
         delete descr;
     }
     return rocsparse_status_success;
+    // LCOV_EXCL_START
 }
 catch(...)
 {
     RETURN_ROCSPARSE_EXCEPTION();
 }
+// LCOV_EXCL_STOP

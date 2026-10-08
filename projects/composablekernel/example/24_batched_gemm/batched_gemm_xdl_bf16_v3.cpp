@@ -1,5 +1,6 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2024, Advanced Micro Devices, Inc. All rights reserved.
+
 #include <iostream>
 #include <numeric>
 #include <initializer_list>
@@ -17,6 +18,11 @@
 #include "ck/library/utility/host_tensor_generator.hpp"
 #include "ck/library/reference_tensor_operation/cpu/reference_batched_gemm.hpp"
 #include "ck/library/utility/literals.hpp"
+
+using ::ck::DeviceMem;
+using ::ck::hip_check_error;
+using ::ck::HostTensorDescriptor;
+using ::ck::Tensor;
 
 template <ck::index_t... Is>
 using S = ck::Sequence<Is...>;
@@ -63,14 +69,14 @@ using DeviceGemmInstance = ck::tensor_operation::device::DeviceBatchedGemmMultiD
     CDEElementOp,
     GemmDefault,
     256,            // BlockSize
-    256,            // MPerBlock
+    128,            // MPerBlock
     128,            // NPerBlock
     32,             // KPerBlock
     8,              // AK1
     8,              // BK1
     16,             // MPerXDL
     16,             // NPerXDL
-    8,              // MXdlPerWave
+    4,              // MXdlPerWave
     4,              // NXdlPerWave
     S<4, 64, 1>,    // ABlockTransferThreadClusterLengths_AK0_M_AK1
     S<1, 0, 2>,     // ABlockTransferThreadClusterArrangeOrder

@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2017-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2017-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -34,12 +34,14 @@
 #include "test_utils_custom_test_types.hpp"
 #include "test_utils_data_generation.hpp"
 #include "test_utils_hipgraphs.hpp"
+#include "test_utils_types.hpp"
 
 // required rocprim headers
 #include <rocprim/config.hpp>
 #include <rocprim/device/config_types.hpp>
 #include <rocprim/device/device_reduce_by_key.hpp>
 #include <rocprim/functional.hpp>
+#include <rocprim/intrinsics/bit.hpp>
 #include <rocprim/iterator/constant_iterator.hpp>
 #include <rocprim/iterator/counting_iterator.hpp>
 #include <rocprim/iterator/discard_iterator.hpp>
@@ -145,7 +147,7 @@ using Params = ::testing::Types<
 template<bool Deterministic, typename Config = rocprim::default_config, typename... Args>
 constexpr hipError_t invoke_reduce_by_key(Args&&... args)
 {
-    if(Deterministic)
+    if constexpr(Deterministic)
     {
         return rocprim::deterministic_reduce_by_key<Config>(std::forward<Args>(args)...);
     }
@@ -155,7 +157,32 @@ constexpr hipError_t invoke_reduce_by_key(Args&&... args)
     }
 }
 
-TYPED_TEST_SUITE(RocprimDeviceReduceByKey, Params);
+struct RocprimDeviceReduceByKeyNameGenerator
+{
+    template<class T>
+    static std::string type_tag_or_array()
+    {
+        if constexpr(std::is_same_v<T, test_utils::custom_test_array_type<double, 8>>)
+            return "ArrayDoublex8";
+        else
+            return type_tag<T>();
+    }
+
+    template<class Params>
+    static std::string GetName(int /*index*/)
+    {
+        std::string n = type_tag_or_array<typename Params::key_type>() + "_"
+                        + type_tag_or_array<typename Params::value_type>() + "_"
+                        + std::to_string(Params::min_segment_length) + "_"
+                        + std::to_string(Params::max_segment_length);
+        if constexpr(Params::use_identity_iterator) n += "_Ident";
+        if constexpr(Params::use_graphs) n += "_Graphs";
+        if constexpr(Params::deterministic) n += "_Det";
+        return n;
+    }
+};
+
+TYPED_TEST_SUITE(RocprimDeviceReduceByKey, Params, RocprimDeviceReduceByKeyNameGenerator);
 
 TYPED_TEST(RocprimDeviceReduceByKey, ReduceByKey)
 {
@@ -373,7 +400,7 @@ void large_indices_reduce_by_key()
             {
                 // for i > 0, returns the position of the most significant set bit,
                 // which is equal to the floor of log2
-                return std::numeric_limits<size_t>::digits - 1 - __clzll(static_cast<long long>(i));
+                return std::numeric_limits<size_t>::digits - 1 - rocprim::clz(i);
             });
         // the input values are all one, so the reduction of plus over the segments
         // results in the size of the group
@@ -461,21 +488,33 @@ void large_indices_reduce_by_key()
 
 TEST(RocprimDeviceReduceByKey, LargeIndicesReduceByKeySmallValueType)
 {
+    GTEST_SKIP_ASAN();
+    GTEST_SKIP_VALGRIND();
+
     large_indices_reduce_by_key<unsigned int>();
 }
 
 TEST(RocprimDeviceReduceByKey, LargeIndicesReduceByKeyLargeValueType)
 {
+    GTEST_SKIP_ASAN();
+    GTEST_SKIP_VALGRIND();
+
     large_indices_reduce_by_key<common::custom_type<size_t, size_t, true>>();
 }
 
 TEST(RocprimDeviceReduceByKey, LargeIndicesReduceByKeyLargeValueTypeWithGraphs)
 {
+    GTEST_SKIP_ASAN();
+    GTEST_SKIP_VALGRIND();
+
     large_indices_reduce_by_key<common::custom_type<size_t, size_t, true>, true>();
 }
 
 TEST(RocprimDeviceReduceByKey, LargeIndicesReduceByKeyDeterministic)
 {
+    GTEST_SKIP_ASAN();
+    GTEST_SKIP_VALGRIND();
+
     large_indices_reduce_by_key<double, false, true>();
 }
 
@@ -572,21 +611,33 @@ void large_segment_count_reduce_by_key()
 
 TEST(RocprimDeviceReduceByKey, LargeSegmentCountReduceByKeySmallValueType)
 {
+    GTEST_SKIP_ASAN();
+    GTEST_SKIP_VALGRIND();
+
     large_segment_count_reduce_by_key<unsigned int>();
 }
 
 TEST(RocprimDeviceReduceByKey, LargeSegmentCountReduceByKeyLargeValueType)
 {
+    GTEST_SKIP_ASAN();
+    GTEST_SKIP_VALGRIND();
+
     large_segment_count_reduce_by_key<common::custom_type<size_t, size_t, true>>();
 }
 
 TEST(RocprimDeviceReduceByKey, GraphReduceByKey)
 {
+    GTEST_SKIP_ASAN();
+    GTEST_SKIP_VALGRIND();
+
     large_segment_count_reduce_by_key<unsigned int, true>();
 }
 
 TEST(RocprimDeviceReduceByKey, LargeSegmentCountReduceByKeyDeterministic)
 {
+    GTEST_SKIP_ASAN();
+    GTEST_SKIP_VALGRIND();
+
     large_segment_count_reduce_by_key<float, false, true>();
 }
 

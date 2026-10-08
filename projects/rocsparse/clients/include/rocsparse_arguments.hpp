@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
- * Copyright (C) 2019-2025 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2019-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -151,12 +151,15 @@ struct Arguments
     double boostvali;
 
     double tolm;
+    double rand_gen_min;
+    double rand_gen_max;
 
     bool graph_test;
     bool skip_reproducibility;
     bool sparsity_pattern_statistics;
     bool call_stage_analysis;
     bool convert_to_int;
+    bool integer_based_manufactured_solution;
     char filename[128];
     char function[64];
     char name[64];
@@ -164,7 +167,11 @@ struct Arguments
     char hardware[32];
     char skip_hardware[32];
 
-    uint32_t req_memory;
+    uint32_t host_memory_gb;
+    uint32_t device_memory_gb;
+
+    rocsparse_solve_mode        solve_mode;
+    rocsparse_diagonal_modifier diagonal_modifier;
 
     // Validate input format.
     // rocsparse_gentest.py is expected to conform to this format.
@@ -298,18 +305,24 @@ struct Arguments
         ROCSPARSE_FORMAT_CHECK(boostval);
         ROCSPARSE_FORMAT_CHECK(boostvali);
         ROCSPARSE_FORMAT_CHECK(tolm);
+        ROCSPARSE_FORMAT_CHECK(rand_gen_min);
+        ROCSPARSE_FORMAT_CHECK(rand_gen_max);
         ROCSPARSE_FORMAT_CHECK(graph_test);
         ROCSPARSE_FORMAT_CHECK(skip_reproducibility);
         ROCSPARSE_FORMAT_CHECK(sparsity_pattern_statistics);
         ROCSPARSE_FORMAT_CHECK(call_stage_analysis);
         ROCSPARSE_FORMAT_CHECK(convert_to_int);
+        ROCSPARSE_FORMAT_CHECK(integer_based_manufactured_solution);
         ROCSPARSE_FORMAT_CHECK(filename);
         ROCSPARSE_FORMAT_CHECK(function);
         ROCSPARSE_FORMAT_CHECK(name);
         ROCSPARSE_FORMAT_CHECK(category);
         ROCSPARSE_FORMAT_CHECK(hardware);
         ROCSPARSE_FORMAT_CHECK(skip_hardware);
-        ROCSPARSE_FORMAT_CHECK(req_memory);
+        ROCSPARSE_FORMAT_CHECK(host_memory_gb);
+        ROCSPARSE_FORMAT_CHECK(device_memory_gb);
+        ROCSPARSE_FORMAT_CHECK(solve_mode);
+        ROCSPARSE_FORMAT_CHECK(diagonal_modifier);
     }
 
     template <typename T>
@@ -343,9 +356,10 @@ struct Arguments
     }
 
     template <typename T>
-    T get_percentage() const
+    floating_data_t<T> get_percentage() const
     {
-        return (rocsparse_isnan(percentage)) ? static_cast<T>(0) : percentage;
+        return (rocsparse_isnan(percentage)) ? static_cast<floating_data_t<T>>(0)
+                                             : floating_data_t<T>(percentage);
     }
 
 private:
@@ -517,16 +531,20 @@ private:
         print("boost_val", arg.boostval);
         print("boost_vali", arg.boostvali);
         print("tolm", arg.tolm);
+        print("rand_gen_min", arg.rand_gen_min);
+        print("rand_gen_max", arg.rand_gen_max);
         print("graph_test", arg.graph_test);
         print("skip_reproducibility", arg.skip_reproducibility);
         print("sparsity_pattern_statistics", arg.sparsity_pattern_statistics);
         print("call_stage_analysis", arg.call_stage_analysis);
         print("convert_to_int", arg.convert_to_int);
+        print("integer_based_manufactured_solution", arg.integer_based_manufactured_solution);
         print("name", arg.name);
         print("category", arg.category);
         print("hardware", arg.hardware);
         print("skip_hardware", arg.skip_hardware);
-        print("req_memory", arg.req_memory);
+        print("host_memory_gb", arg.host_memory_gb);
+        print("device_memory_gb", arg.device_memory_gb);
         print("unit_check", arg.unit_check);
         print("timing", arg.timing);
         print("iters", arg.iters);
@@ -541,6 +559,8 @@ private:
         print("batch_stride", arg.batch_stride);
         print("ld_multiplier_B", arg.ld_multiplier_B);
         print("ld_multiplier_C", arg.ld_multiplier_C);
+        print("solve_mode", arg.solve_mode);
+        print("diagonal_modifier", arg.diagonal_modifier);
         return str << " }\n";
     }
 };

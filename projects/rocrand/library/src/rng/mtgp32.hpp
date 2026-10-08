@@ -80,7 +80,8 @@ namespace rocrand_impl::host
 struct mtgp32_device_engine : ::rocrand_device::mtgp32_engine
 {
     // suppress warning about no initialization for __shared__ variables
-    __host__ __device__ mtgp32_device_engine(){};
+    __host__ __device__
+    mtgp32_device_engine() {};
 
     __forceinline__ __host__ __device__
     unsigned int next()
@@ -97,11 +98,12 @@ struct mtgp32_device_engine : ::rocrand_device::mtgp32_engine
     }
 };
 
-template<class T, class Distribution, unsigned int BlockSize>
-__host__ void generate(unsigned int (&input)[BlockSize][Distribution::input_width],
-                       T (&output)[BlockSize][Distribution::output_width],
-                       Distribution&         distribution,
-                       mtgp32_device_engine& engine)
+template<bool UseLDS, class T, class Distribution, unsigned int BlockSize>
+__host__
+void generate(unsigned int (&input)[BlockSize][Distribution::input_width],
+              T (&output)[BlockSize][Distribution::output_width],
+              Distribution&         distribution,
+              mtgp32_device_engine& engine)
 {
     for(unsigned int i = 0; i < Distribution::input_width; i++)
     {
@@ -112,11 +114,16 @@ __host__ void generate(unsigned int (&input)[BlockSize][Distribution::input_widt
     }
     for(unsigned int j = 0; j < BlockSize; j++)
     {
-        distribution(input[j], output[j]);
+#ifdef __HIP_DEVICE_COMPILE__
+        if constexpr(is_discrete_distribution_v<Distribution> && UseLDS)
+            distribution.generate_lds(input[j], output[j]);
+        else
+#endif
+            distribution(input[j], output[j]);
     }
 }
 
-template<class T, class Distribution>
+template<bool UseLDS, class T, class Distribution>
 __forceinline__ __device__
 void generate(unsigned int (&input)[Distribution::input_width],
               T (&output)[Distribution::output_width],
@@ -127,11 +134,17 @@ void generate(unsigned int (&input)[Distribution::input_width],
     {
         input[i] = engine.next();
     }
-    distribution(input, output);
+#ifdef __HIP_DEVICE_COMPILE__
+    if constexpr(is_discrete_distribution_v<Distribution> && UseLDS)
+        distribution.generate_lds(input, output);
+    else
+#endif
+        distribution(input, output);
 }
 
 template<class vec_type, class T, unsigned int output_width, unsigned int BlockSize>
-__host__ void save_vec_n(vec_type* vec_data, T (&output)[BlockSize][output_width], size_t index)
+__host__
+void save_vec_n(vec_type* vec_data, T (&output)[BlockSize][output_width], size_t index)
 {
     for(unsigned int j = 0; j < BlockSize; j++)
     {
@@ -147,8 +160,8 @@ void save_vec_n(vec_type* vec_data, T (&output)[output_width], size_t index)
 }
 
 template<class vec_type, class T, unsigned int output_width, unsigned int BlockSize>
-__host__ void
-    save_n(vec_type* vec_data, T (&output)[BlockSize][output_width], size_t index, size_t vec_n)
+__host__
+void save_n(vec_type* vec_data, T (&output)[BlockSize][output_width], size_t index, size_t vec_n)
 {
     for(unsigned int j = 0; j < BlockSize; j++)
     {
@@ -203,13 +216,14 @@ void save_head_tail_impl(T (&output)[output_width],
 }
 
 template<class T, unsigned int output_width, unsigned int BlockSize>
-__host__ void save_head_tail(T (&output)[BlockSize][output_width],
-                             size_t index,
-                             T*     data,
-                             size_t n,
-                             size_t head_size,
-                             size_t tail_size,
-                             size_t vec_n_up)
+__host__
+void save_head_tail(T (&output)[BlockSize][output_width],
+                    size_t index,
+                    T*     data,
+                    size_t n,
+                    size_t head_size,
+                    size_t tail_size,
+                    size_t vec_n_up)
 {
     for(unsigned int j = 0; j < BlockSize; j++)
     {
@@ -230,86 +244,94 @@ void save_head_tail(T (&output)[output_width],
     save_head_tail_impl(output, index, data, n, head_size, tail_size, vec_n_up);
 }
 
-template<class ConfigProvider,
-         bool IsDynamic,
-         class T,
-         class Distribution,
-         host::target_arch Arch = host::target_arch::unknown>
-__host__ __device__ __forceinline__
-void generate_mtgp(dim3 block_idx,
-                   dim3 thread_idx,
-                   dim3 grid_dim,
-                   dim3 /*block_dim*/,
-                   mtgp32_device_engine* engines,
-                   T*                    data,
-                   const size_t          n,
-                   Distribution          distribution)
+template<class ConfigProvider, bool IsDynamic, class T, class Distribution, bool UseLDS = false>
+struct generate_mtgp
 {
-    static_assert(is_single_tile_config<ConfigProvider, T, Arch>(IsDynamic),
-                  "This kernel should only be used with single tile configs");
-    constexpr unsigned int BlockSize    = get_block_size<ConfigProvider, T, Arch>(IsDynamic);
-    constexpr unsigned int input_width  = Distribution::input_width;
-    constexpr unsigned int output_width = Distribution::output_width;
+    template<host::target_arch Arch = host::target_arch::unknown>
+    __host__ __device__ __forceinline__
+    static void generate(dim3 block_idx,
+                         dim3 thread_idx,
+                         dim3 grid_dim,
+                         dim3 /*block_dim*/,
+                         mtgp32_device_engine* engines,
+                         T* __restrict__ data,
+                         const size_t n,
+                         Distribution distribution)
+    {
+        static_assert(is_single_tile_config<ConfigProvider, T, Arch>(IsDynamic),
+                      "This kernel should only be used with single tile configs");
+        constexpr unsigned int BlockSize    = get_block_size<ConfigProvider, T, Arch>(IsDynamic);
+        constexpr unsigned int input_width  = Distribution::input_width;
+        constexpr unsigned int output_width = Distribution::output_width;
 
-    using vec_type = aligned_vec_type<T, output_width>;
+        using vec_type = aligned_vec_type<T, output_width>;
 
-    const unsigned int engine_id = block_idx.x;
-    const unsigned int stride    = grid_dim.x * BlockSize;
-    size_t             index     = block_idx.x * BlockSize + thread_idx.x;
+        const unsigned int engine_id = block_idx.x;
+        const unsigned int stride    = grid_dim.x * BlockSize;
+        size_t             index     = block_idx.x * BlockSize + thread_idx.x;
 
 // Load device engine
 #ifdef __HIP_DEVICE_COMPILE__
-    __shared__
+        __shared__
 #endif
         mtgp32_device_engine engine;
-    engine.copy(&engines[engine_id]);
+        engine.copy(&engines[engine_id]);
 
 #ifdef __HIP_DEVICE_COMPILE__
-    unsigned int input[input_width];
-    T            output[output_width];
+        unsigned int input[input_width];
+        T            output[output_width];
 #else
-    // Due to the lock-step-like behavior of the device generator, the first value of a distribution
-    //   for thread i is i, the next value is i + BlockSize, etc. Hence, all values must be cached for the host generator.
-    unsigned int input[BlockSize][input_width];
-    T            output[BlockSize][output_width];
+        // Due to the lock-step-like behavior of the device generator, the first value of a distribution
+        //   for thread i is i, the next value is i + BlockSize, etc. Hence, all values must be cached for the host generator.
+        unsigned int input[BlockSize][input_width];
+        T            output[BlockSize][output_width];
 #endif
 
-    const uintptr_t uintptr   = reinterpret_cast<uintptr_t>(data);
-    const size_t misalignment = (output_width - uintptr / sizeof(T) % output_width) % output_width;
-    const unsigned int head_size    = cpp_utils::min(n, misalignment);
-    const unsigned int tail_size = (n - head_size) % output_width;
-    const size_t       vec_n     = (n - head_size) / output_width;
+        const uintptr_t uintptr = reinterpret_cast<uintptr_t>(data);
+        const size_t    misalignment
+            = (output_width - uintptr / sizeof(T) % output_width) % output_width;
+        const unsigned int head_size = cpp_utils::min(n, misalignment);
+        const unsigned int tail_size = (n - head_size) % output_width;
+        const size_t       vec_n     = (n - head_size) / output_width;
 
-    // vec_n rounded up and down to the nearest multiple of BlockSize
-    const size_t remainder_value = vec_n % BlockSize;
-    const size_t vec_n_down      = vec_n - remainder_value;
-    const size_t vec_n_up        = remainder_value == 0 ? vec_n_down : (vec_n_down + BlockSize);
+        // vec_n rounded up and down to the nearest multiple of BlockSize
+        const size_t remainder_value = vec_n % BlockSize;
+        const size_t vec_n_down      = vec_n - remainder_value;
+        const size_t vec_n_up        = remainder_value == 0 ? vec_n_down : (vec_n_down + BlockSize);
 
-    vec_type* vec_data = reinterpret_cast<vec_type*>(data + misalignment);
-    // Generate and store all aligned vector multiples
-    while(index < vec_n_down)
-    {
-        generate(input, output, distribution, engine);
-        save_vec_n(vec_data, output, index);
-        index += stride;
-    }
-    // Generate and store all aligned vector multiples for which not all threads participate in storing
-    if(index < vec_n_up)
-    {
-        generate(input, output, distribution, engine);
-        save_n(vec_data, output, index, vec_n);
-        index += stride;
-    }
-    // Generate and store the remaining T that are not aligned to vec_type
-    if(output_width > 1 && (head_size > 0 || tail_size > 0))
-    {
-        generate(input, output, distribution, engine);
-        save_head_tail(output, index, data, n, head_size, tail_size, vec_n_up);
-    }
+        vec_type* vec_data = reinterpret_cast<vec_type*>(data + misalignment);
+#ifdef __HIP_DEVICE_COMPILE__
+        if constexpr(is_discrete_distribution_v<Distribution> && UseLDS)
+        {
+            distribution.stage_to_lds(threadIdx.x, blockDim.x);
+            __syncthreads();
+        }
+#endif
+        // Generate and store all aligned vector multiples
+        while(index < vec_n_down)
+        {
+            ::rocrand_impl::host::generate<UseLDS>(input, output, distribution, engine);
+            save_vec_n(vec_data, output, index);
+            index += stride;
+        }
+        // Generate and store all aligned vector multiples for which not all threads participate in storing
+        if(index < vec_n_up)
+        {
+            ::rocrand_impl::host::generate<UseLDS>(input, output, distribution, engine);
+            save_n(vec_data, output, index, vec_n);
+            index += stride;
+        }
+        // Generate and store the remaining T that are not aligned to vec_type
+        if(output_width > 1 && (head_size > 0 || tail_size > 0))
+        {
+            ::rocrand_impl::host::generate<UseLDS>(input, output, distribution, engine);
+            save_head_tail(output, index, data, n, head_size, tail_size, vec_n_up);
+        }
 
-    // Save engine with its state
-    engines[engine_id].copy(&engine);
-}
+        // Save engine with its state
+        engines[engine_id].copy(&engine);
+    }
+};
 
 template<class System, class ConfigProvider>
 class mtgp32_generator_template : public generator_impl_base
@@ -362,13 +384,18 @@ public:
         return *this;
     }
 
-    ~mtgp32_generator_template()
+    void free_engines()
     {
         if(m_engines != nullptr)
         {
             system_type::free(m_engines);
             m_engines = nullptr;
         }
+    }
+
+    ~mtgp32_generator_template()
+    {
+        free_engines();
     }
 
     static constexpr rocrand_rng_type type()
@@ -378,6 +405,7 @@ public:
 
     void reset() override final
     {
+        free_engines();
         m_engines_initialized = false;
     }
 
@@ -435,7 +463,7 @@ public:
 
     rocrand_status init()
     {
-        if (m_engines_initialized)
+        if(m_engines_initialized)
         {
             return ROCRAND_STATUS_SUCCESS;
         }
@@ -450,7 +478,7 @@ public:
         }
         m_engines_size = config.blocks;
 
-        if (m_engines_size > mtgpdc_params_11213_num)
+        if(m_engines_size > mtgpdc_params_11213_num)
         {
             return ROCRAND_STATUS_ALLOCATION_FAILED;
         }
@@ -481,12 +509,11 @@ public:
         return ROCRAND_STATUS_SUCCESS;
     }
 
-    template<class T, class Distribution = uniform_distribution<T> >
-    rocrand_status generate(T * data, size_t data_size,
-                            Distribution distribution = Distribution())
+    template<class T, class Distribution = uniform_distribution<T>>
+    rocrand_status generate(T* data, size_t data_size, Distribution distribution = Distribution())
     {
         rocrand_status status = init();
-        if (status != ROCRAND_STATUS_SUCCESS)
+        if(status != ROCRAND_STATUS_SUCCESS)
         {
             return status;
         }
@@ -513,26 +540,44 @@ public:
         // The host generator uses a block of size one to emulate a device generator that uses a shared memory state
         const dim3 threads
             = std::is_same_v<system_type, system::device_system> ? config.threads : dim3(1);
-        status = dynamic_dispatch(
-            m_order,
-            [&, this](auto is_dynamic)
-            {
-                auto generate_mtgp_kernel = [&] __host__ __device__(auto arch, auto... args)
+
+        auto launch_with_lds = [&](auto possible_lds_usage)
+        {
+            return dynamic_dispatch(
+                m_order,
+                [&, this](auto is_dynamic)
                 {
-                    generate_mtgp<ConfigProvider, is_dynamic, T, Distribution, arch>(args...);
-                };
-                return system_type::template launch<ConfigProvider, T, is_dynamic>(
-                    generate_mtgp_kernel,
-                    target_arch,
-                    dim3(config.blocks),
-                    dim3(threads),
-                    0,
-                    m_stream,
-                    m_engines,
-                    data,
-                    data_size,
-                    distribution);
-            });
+                    return system_type::template launch<generate_mtgp<ConfigProvider,
+                                                                      is_dynamic,
+                                                                      T,
+                                                                      Distribution,
+                                                                      possible_lds_usage>,
+                                                        ConfigProvider,
+                                                        T,
+                                                        is_dynamic>(target_arch,
+                                                                    dim3(config.blocks),
+                                                                    dim3(threads),
+                                                                    0,
+                                                                    m_stream,
+                                                                    m_engines,
+                                                                    data,
+                                                                    data_size,
+                                                                    distribution);
+                });
+        };
+
+        if constexpr(is_discrete_distribution_v<Distribution>)
+        {
+            const bool use_lds = distribution.check_lds_size();
+            const auto use_lds_variant
+                = cpp_utils::constexpr_value_variant<bool, false, true>::create(use_lds);
+
+            status = std::visit(launch_with_lds, use_lds_variant);
+        }
+        else
+        {
+            status = launch_with_lds(std::false_type{});
+        }
 
         // Check kernel status
         if(status != ROCRAND_STATUS_SUCCESS)
@@ -562,27 +607,27 @@ public:
     }
 
     template<class T>
-    rocrand_status generate_uniform(T * data, size_t data_size)
+    rocrand_status generate_uniform(T* data, size_t data_size)
     {
         uniform_distribution<T> distribution;
         return generate(data, data_size, distribution);
     }
 
     template<class T>
-    rocrand_status generate_normal(T * data, size_t data_size, T mean, T stddev)
+    rocrand_status generate_normal(T* data, size_t data_size, T mean, T stddev)
     {
         normal_distribution<T> distribution(mean, stddev);
         return generate(data, data_size, distribution);
     }
 
     template<class T>
-    rocrand_status generate_log_normal(T * data, size_t data_size, T mean, T stddev)
+    rocrand_status generate_log_normal(T* data, size_t data_size, T mean, T stddev)
     {
         log_normal_distribution<T> distribution(mean, stddev);
         return generate(data, data_size, distribution);
     }
 
-    rocrand_status generate_poisson(unsigned int * data, size_t data_size, double lambda)
+    rocrand_status generate_poisson(unsigned int* data, size_t data_size, double lambda)
     {
         // For an unknown reason, on CUDA, the initialization of the engines must precede
         // the initialization of the poisson distribution, otherwise spurious miscalculations

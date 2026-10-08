@@ -16,7 +16,12 @@ Infrastructure
 
 - Doxygen and Sphinx are used to generate the project's documentation.
 - Jenkins is used to automate Continuous Integration (CI) testing, with configurations stored in the ``.jenkins`` folder.
-- hipTensor is hosted and maintained by AMD on `GitHub  <https://github.com/ROCm/hipTensor>`_.
+- hipTensor is hosted and maintained by AMD on `GitHub  <https://github.com/ROCm/rocm-libraries/tree/develop/projects/hiptensor>`_.
+
+  .. note::
+
+    The hipTensor repository for ROCm 7.1.1 and earlier is located at `<https://github.com/ROCm/hipTensor>`_.
+
 - The hipTensor project is organized and configured using ``CMake``, with ``CMakeLists.txt`` files in the root of each directory.
 - ``clang-format`` is used to format C++ code. ``.githooks/install`` ensures that a clang-format pass will run on each committed file.
 - ``GTest`` is used to implement test suite organization and execution.
@@ -27,7 +32,7 @@ Infrastructure
 Design concepts
 --------------------------------
 
-hipTensor is a library developed with the ``C++17`` language standard. It uses meta-programming techniques to optimize code at compile time and generate efficient GPU kernels.
+hipTensor is a library developed with the ``C++20`` language standard. It uses meta-programming techniques to optimize code at compile time and generate efficient GPU kernels.
 hipTensor employs Composable Kernel as a functional backend and is written in different layers.
 
 The outer API layer serves as a functional interface for users to define tensor data abstractions and manipulations.
@@ -48,9 +53,36 @@ Nomenclature
 Tensor contraction
 ^^^^^^^^^^^^^^^^^^^
 
-In general, a tensor contraction is a multiply-accumulate problem over elements between two multi-dimensional tensors.
+In general, a tensor contraction is a multiply-accumulate problem over elements between two or more multi-dimensional tensors.
 hipTensor uses Einstein notation, where repeated indices are summed and each index appears at most twice in each mathematical term.
 In the process of accumulating over summation dimensions, they are effectively collapsed or contracted.
+
+hipTensor supports the following contraction forms:
+
+* **Binary bilinear contraction**: :math:`D = \alpha \, A \, B + \beta \, C`,
+  where :math:`A`, :math:`B`, :math:`C` are input tensors and :math:`D` is the
+  output tensor. Created with ``hiptensorCreateContraction`` and executed with
+  ``hiptensorContract``.
+
+* **Binary scale contraction**: :math:`D = \alpha \, A \, B`. The scale form is
+  selected by passing a null tensor descriptor (and a null pointer at execution
+  time) for :math:`C`; the bilinear API is reused with the bias term omitted.
+
+* **Trinary bilinear contraction**: :math:`E = \alpha \, A \, B \, C + \beta \, D`,
+  where :math:`A`, :math:`B`, :math:`C` are input tensors, :math:`D` is the
+  bias input, and :math:`E` is the output. Created with
+  ``hiptensorCreateContractionTrinary`` and executed with
+  ``hiptensorContractTrinary``.
+
+* **Trinary scale contraction**: :math:`E = \alpha \, A \, B \, C`. The scale
+  form is selected by passing a null tensor descriptor (and a null pointer at
+  execution time) for :math:`D`; the trinary API is reused with the bias term
+  omitted.
+
+All four contraction forms support per-input-tensor unary element-wise
+operators (for example, ``HIPTENSOR_OP_RELU``, ``HIPTENSOR_OP_EXP``,
+``HIPTENSOR_OP_COS``) applied before the contraction, in addition to the
+default ``HIPTENSOR_OP_IDENTITY``.
 
 Tensor permutation
 ^^^^^^^^^^^^^^^^^^^
@@ -118,6 +150,8 @@ The ``samples`` directory contains the sample codes for the following demonstrat
 - ``01_contraction/simple_scale_contraction``: Abstract base code for scale contractions.
 - ``01_contraction/simple_bilinear_contraction_*``: Specialized bilinear contraction demonstrations per data type.
 - ``01_contraction/simple_scale_contraction_*``: Specialized bilinear contraction demonstrations per data type.
+- ``01_contraction/simple_trinary_bilinear_contraction_*``: Specialized trinary bilinear contraction demonstrations per data type.
+- ``01_contraction/simple_trinary_scale_contraction_*``: Specialized trinary scale contraction demonstrations per data type.
 - ``01_contraction/simple_contraction_plan_cache``: Simple contraction with plan cache demonstration.
 - ``01_contraction/simple_contraction_c``: Simple contraction demonstration in C.
 - ``02_elementwise/elementwise_permute``: Simple permutation demonstration.
@@ -134,9 +168,17 @@ The ``test`` directory contains the test codes for testing the following functio
 
 - ``00_unit/logger_test``: Tests logger API functions of hipTensor.
 - ``00_unit/yaml_test``: Tests the YAML serialization and de-serialization for testing parameters.
-- ``01_contraction/contraction_test``: Testing harness for the bilinear and scale contractions.
-- ``01_contraction/complex_*_contraction``: Testing harness for the bilinear and scale contractions with complex data types.
+- ``01_contraction/bilinear_contraction_test_*``: Testing harness for the bilinear contractions.
+- ``01_contraction/scale_contraction_test_*``: Testing harness for the scale contractions.
+- ``01_contraction/complex_bilinear_contraction_test_*``: Testing harness for the bilinear contractions with complex data types.
+- ``01_contraction/complex_scale_contraction_test_*``: Testing harness for the scale contractions with complex data types.
+- ``01_contraction/trinary_contraction_test``: Testing harness for the trinary contractions.
+- ``01_contraction/trinary_bilinear_contraction_test``: Testing harness for the trinary bilinear contractions.
+- ``01_contraction/trinary_scale_contraction_test``: Testing harness for the trinary scale contractions.
+- ``01_contraction/bilinear_contraction_with_unary_ops_test``: Testing harness for binary bilinear contractions with non-identity unary operators.
+- ``01_contraction/scale_contraction_with_unary_ops_test``: Testing harness for binary scale contractions with non-identity unary operators.
 - ``01_contraction/contraction_resource``: Shared resource infrastructure for testing contractions.
+- ``01_contraction/trinary_contraction_resource``: Shared resource infrastructure for testing trinary contractions.
 - ``01_contraction/configs``: YAML files with actual contraction testing parameters.
 - ``02_elementwise/elementwise_*``: Testing infrastructure for element-wise operation tests.
 - ``02_elementwise/rank?_elementwise_permute_*``: Testing harnesses for permutation of a particular rank.

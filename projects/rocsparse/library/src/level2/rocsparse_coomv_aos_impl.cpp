@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
- * Copyright (C) 2018-2025 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2018-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -94,6 +94,7 @@ namespace rocsparse
               typename T>
     ROCSPARSE_KERNEL(BLOCKSIZE)
     void coomvn_aos_atomic_loops(int64_t nnz,
+                                 I       m,
                                  ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),
                                  const I* __restrict__ coo_ind,
                                  const A* __restrict__ coo_val,
@@ -106,7 +107,7 @@ namespace rocsparse
         if(alpha != 0)
         {
             rocsparse::coomvn_aos_atomic_loops_device<BLOCKSIZE, LOOPS>(
-                nnz, alpha, coo_ind, coo_val, x, y, idx_base);
+                nnz, m, alpha, coo_ind, coo_val, x, y, idx_base);
         }
     }
 
@@ -114,6 +115,7 @@ namespace rocsparse
     ROCSPARSE_KERNEL(BLOCKSIZE)
     void coomvt_aos_kernel(rocsparse_operation trans,
                            int64_t             nnz,
+                           I                   n,
                            ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),
                            const I* __restrict__ coo_ind,
                            const A* __restrict__ coo_val,
@@ -125,7 +127,7 @@ namespace rocsparse
         ROCSPARSE_DEVICE_HOST_SCALAR_GET(alpha);
         if(alpha != 0)
         {
-            rocsparse::coomvt_aos_device(trans, nnz, alpha, coo_ind, coo_val, x, y, idx_base);
+            rocsparse::coomvt_aos_device(trans, nnz, n, alpha, coo_ind, coo_val, x, y, idx_base);
         }
     }
 
@@ -164,6 +166,7 @@ namespace rocsparse
                 0,
                 stream,
                 nnz,
+                m,
                 ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),
                 coo_ind,
                 coo_val,
@@ -184,6 +187,7 @@ namespace rocsparse
                 handle->stream,
                 trans,
                 nnz,
+                n,
                 ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),
                 coo_ind,
                 coo_val,
@@ -194,6 +198,71 @@ namespace rocsparse
             break;
         }
         }
+
+        return rocsparse_status_success;
+    }
+
+    template <uint32_t COOMVN_DIM, typename T, typename I, typename A, typename X, typename Y>
+    static rocsparse_status coomv_aos_segmented_launch(rocsparse_handle     handle,
+                                                       int64_t              nnz,
+                                                       const T*             alpha_device_host,
+                                                       const A*             coo_val,
+                                                       const I*             coo_ind,
+                                                       const X*             x,
+                                                       Y*                   y,
+                                                       rocsparse_index_base base)
+    {
+        hipStream_t stream = handle->stream;
+
+        int maxthreads = handle->properties.maxThreadsPerBlock;
+        int nprocs     = 2 * handle->properties.multiProcessorCount;
+        int maxblocks  = (nprocs * maxthreads - 1) / COOMVN_DIM + 1;
+
+        I minblocks = (nnz - 1) / COOMVN_DIM + 1;
+        I nblocks   = maxblocks < minblocks ? maxblocks : minblocks;
+        I nloops    = (nnz - 1) / (COOMVN_DIM * nblocks) + 1;
+
+        // Buffer
+        char* ptr = reinterpret_cast<char*>(handle->buffer);
+        ptr += 256;
+
+        // row block reduction buffer
+        I* row_block_red = reinterpret_cast<I*>(ptr);
+        ptr += ((sizeof(I) * nblocks - 1) / 256 + 1) * 256;
+
+        // val block reduction buffer
+        T* val_block_red = reinterpret_cast<T*>(ptr);
+
+        RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(
+            (rocsparse::coomvn_aos_segmented_loops<COOMVN_DIM>),
+            dim3(nblocks),
+            dim3(COOMVN_DIM),
+            0,
+            stream,
+            nnz,
+            nloops,
+            ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),
+            coo_ind,
+            coo_val,
+            x,
+            y,
+            row_block_red,
+            val_block_red,
+            base,
+            handle->pointer_mode == rocsparse_pointer_mode_host);
+
+        RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(
+            (rocsparse::coomvn_segmented_loops_reduce<COOMVN_DIM>),
+            dim3(1),
+            dim3(COOMVN_DIM),
+            0,
+            stream,
+            nblocks,
+            ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),
+            row_block_red,
+            val_block_red,
+            y,
+            handle->pointer_mode == rocsparse_pointer_mode_host);
 
         return rocsparse_status_success;
     }
@@ -214,9 +283,6 @@ namespace rocsparse
     {
         ROCSPARSE_ROUTINE_TRACE;
 
-        // Stream
-        hipStream_t stream = handle->stream;
-
         const I ysize = (trans == rocsparse_operation_none) ? m : n;
 
         // Scale y with beta
@@ -227,57 +293,46 @@ namespace rocsparse
         {
         case rocsparse_operation_none:
         {
-#define COOMVN_DIM 256
-            int maxthreads = handle->properties.maxThreadsPerBlock;
-            int nprocs     = 2 * handle->properties.multiProcessorCount;
-            int maxblocks  = (nprocs * maxthreads - 1) / COOMVN_DIM + 1;
+            // Launch tuning: the segmented COO (AOS) matvec uses a 256-thread
+            // block by default. On wave32 (RDNA, e.g. gfx1201) a smaller block
+            // improves throughput for large problems, while small problems keep
+            // 256. The crossover is driven by TOTAL nnz (problem size), not
+            // nnz/row.
+            //
+            // Performance portability:
+            //  - the tuned size is expressed in WAVEFRONTS (4 * wavefront_size ==
+            //    128 threads / 4 wavefronts on wave32);
+            //  - the crossover is scaled by the device's resident-thread capacity
+            //    (multiProcessorCount * maxThreadsPerMultiProcessor) rather than a
+            //    fixed nnz magic number, so it tracks wave32 GPUs of different
+            //    sizes. The ~38x-capacity knee reproduces the value measured on
+            //    gfx1201 (RX 9070; capacity 57344 -> ~2.2M nnz), where 128
+            //    regresses below and wins (+1..+5%) at and above the knee;
+            //  - it stays gated to wave32 (wave64 keeps the historical 256-thread
+            //    block unconditionally, so an untuned architecture is not
+            //    perturbed).
+            uint32_t coomvn_aos_dim = 256;
+            if(handle->wavefront_size == 32)
+            {
+                const int64_t device_capacity
+                    = static_cast<int64_t>(handle->properties.multiProcessorCount)
+                      * static_cast<int64_t>(handle->properties.maxThreadsPerMultiProcessor);
+                if(device_capacity > 0 && nnz >= 38 * device_capacity)
+                {
+                    coomvn_aos_dim = 4u * static_cast<uint32_t>(handle->wavefront_size);
+                }
+            }
 
-            I minblocks = (nnz - 1) / COOMVN_DIM + 1;
-            I nblocks   = maxblocks < minblocks ? maxblocks : minblocks;
-            I nloops    = (nnz - 1) / (COOMVN_DIM * nblocks) + 1;
-
-            // Buffer
-            char* ptr = reinterpret_cast<char*>(handle->buffer);
-            ptr += 256;
-
-            // row block reduction buffer
-            I* row_block_red = reinterpret_cast<I*>(ptr);
-            ptr += ((sizeof(I) * nblocks - 1) / 256 + 1) * 256;
-
-            // val block reduction buffer
-            T* val_block_red = reinterpret_cast<T*>(ptr);
-
-            RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(
-                (rocsparse::coomvn_aos_segmented_loops<COOMVN_DIM>),
-                dim3(nblocks),
-                dim3(COOMVN_DIM),
-                0,
-                stream,
-                nnz,
-                nloops,
-                ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),
-                coo_ind,
-                coo_val,
-                x,
-                y,
-                row_block_red,
-                val_block_red,
-                descr->base,
-                handle->pointer_mode == rocsparse_pointer_mode_host);
-
-            RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(
-                (rocsparse::coomvn_segmented_loops_reduce<COOMVN_DIM>),
-                dim3(1),
-                dim3(COOMVN_DIM),
-                0,
-                stream,
-                nblocks,
-                ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),
-                row_block_red,
-                val_block_red,
-                y,
-                handle->pointer_mode == rocsparse_pointer_mode_host);
-#undef COOMVN_DIM
+            if(coomvn_aos_dim == 128)
+            {
+                RETURN_IF_ROCSPARSE_ERROR((rocsparse::coomv_aos_segmented_launch<128>(
+                    handle, nnz, alpha_device_host, coo_val, coo_ind, x, y, descr->base)));
+            }
+            else
+            {
+                RETURN_IF_ROCSPARSE_ERROR((rocsparse::coomv_aos_segmented_launch<256>(
+                    handle, nnz, alpha_device_host, coo_val, coo_ind, x, y, descr->base)));
+            }
             break;
         }
         case rocsparse_operation_transpose:
@@ -291,6 +346,7 @@ namespace rocsparse
                 handle->stream,
                 trans,
                 nnz,
+                n,
                 ROCSPARSE_DEVICE_HOST_SCALAR_ARGS(handle, alpha_device_host),
                 coo_ind,
                 coo_val,
@@ -525,8 +581,12 @@ INSTANTIATE_MIXED(float, int32_t, int8_t, int8_t, float);
 INSTANTIATE_MIXED(float, int64_t, int8_t, int8_t, float);
 INSTANTIATE_MIXED(float, int32_t, _Float16, _Float16, float);
 INSTANTIATE_MIXED(float, int64_t, _Float16, _Float16, float);
+INSTANTIATE_MIXED(float, int32_t, _Float16, _Float16, _Float16);
+INSTANTIATE_MIXED(float, int64_t, _Float16, _Float16, _Float16);
 INSTANTIATE_MIXED(float, int32_t, rocsparse_bfloat16, rocsparse_bfloat16, float);
 INSTANTIATE_MIXED(float, int64_t, rocsparse_bfloat16, rocsparse_bfloat16, float);
+INSTANTIATE_MIXED(float, int32_t, rocsparse_bfloat16, rocsparse_bfloat16, rocsparse_bfloat16);
+INSTANTIATE_MIXED(float, int64_t, rocsparse_bfloat16, rocsparse_bfloat16, rocsparse_bfloat16);
 INSTANTIATE_MIXED(
     rocsparse_float_complex, int32_t, float, rocsparse_float_complex, rocsparse_float_complex);
 INSTANTIATE_MIXED(

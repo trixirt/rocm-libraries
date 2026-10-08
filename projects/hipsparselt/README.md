@@ -146,7 +146,7 @@ Refer to the available build options using `./install.sh --help`
 *Build control options*:
 
 * `GPU_TARGETS`: AMD GFX targets to cross-compile for (default: `all`)
-* `HIPSPARSELT_BUILD_SHARED_LIBS`: Build the hipSPARSELt shared or static library (default: `ON`)
+* `HIPSPARSELT_BUILD_SHARED_LIBS`: Build hipSPARSELt as shared rather than static (default: `ON`)
 * `HIPSPARSELT_BUILD_TESTING`: Build test client (default: `ON`)
 * `HIPSPARSELT_BUILD_COVERAGE`: Build tests with coverage support (default: `OFF`)
 
@@ -167,7 +167,8 @@ Refer to the available build options using `./install.sh --help`
 
 * `HIPSPARSELT_ENABLE_MARKER`: Enable rocTracer marker support (default: `OFF`)
 * `HIPSPARSELT_ENABLE_ASAN`: Build with address sanitizer enabled (default: `OFF`)
-* `HIPSPARSELT_HIPBLASLT_PATH`: Path to hipblaslt directory (default: `${CMAKE_CURRENT_SOURCE_DIR}/../../hipblaslt/next-cmake`)
+* `HIPBLASLT_TENSILELITE_PATH`: Path to the hipBLASLt TensileLite code-generation sources (default: the sibling `hipblaslt/tensilelite` directory)
+* `TENSILELITE_LIBLOGIC_PATH`: Path to the hipSPARSELt TensileLite logic files; required when `HIPSPARSELT_ENABLE_DEVICE=ON`
 * `HIPSPARSELT_COVERAGE_GTEST_FILTER`: GTest filter for coverage tests (default: empty)
 * `TENSILE_ENABLE_MARKER`: Enables or disables the Tensile marker functionality (default: `OFF`)
 
@@ -195,6 +196,7 @@ Refer to the available build options using `./install.sh --help`
       * BFLOAT16 input/output, FP32 Matrix Core accumulate
       * INT8 input/output, INT32 Matrix Core accumulate
       * INT8 input, FP16 output, INT32 Matrix Core accumulate
+      * INT8 input, INT32 output, INT32 Matrix Core accumulate
       * FP8(E4M3) input, FP32 output, FP32 Matrix Core accumulate (LLVM target: gfx950)
       * BF8(E5M2) input, FP32 output, FP32 Matrix Core accumulate (LLVM target: gfx950)
     * Matrix pruning and compression functionalities

@@ -2,12 +2,90 @@
 
 Full documentation for hipSOLVER is available at the [hipSOLVER Documentation](https://rocm.docs.amd.com/projects/hipSOLVER/en/latest/index.html).
 
+
+## (Unreleased) hipSOLVER
+
+### Added
+
+* Added functions:
+  * getrfBatched
+    * hipsolverSgetrfBatched_bufferSize, hipsolverDgetrfBatched_bufferSize, hipsolverCgetrfBatched_bufferSize, and hipsolverZgetrfBatched_bufferSize
+    * hipsolverSgetrfBatched, hipsolverDgetrfBatched, hipsolverCgetrfBatched, and hipsolverZgetrfBatched
+
+### Changed
+### Removed
+### Optimized
+### Resolved issues
+### Known issues
+### Upcoming changes
+
+
+## hipSOLVER 3.7.0 for ROCm 10.1.0
+
+### Added
+
+* Added compatibility-only functions:
+  * larft
+    * hipsolverDnXlarft_bufferSize
+    * hipsolverDnXlarft
+
+### Resolved issues
+
+* Fixed hipsolverDnXpotrs calling 32-bit potrs instead of 64-bit potrs.
+
+
+## hipSOLVER 3.6.0 for ROCm 10.0.0
+
+### Changed
+
+* Minor internal changes
+
+
+## hipSOLVER 3.5.0 for ROCm 7.14.0
+
+### Changed
+
+* Minor internal changes
+
+
+## hipSOLVER 3.4.0 for ROCm 7.13.0
+
+### Added
+
+* Added compatibility-only functions
+  * geev
+    * hipsolverDnXgeev_bufferSize
+    * hipsolverDnXgeev
+  * syevBatched
+    * hipsolverDnXsyevBatched_bufferSize
+    * hipsolverDnXsyevBatched
+  * syevd
+    * hipsolverDnXsyevd_bufferSize
+    * hipsolverDnXsyevd
+  * sytrs
+    * hipsolverDnXsytrs_bufferSize
+    * hipsolverDnXsytrs
+
+
+## hipSOLVER 3.3.0 for ROCm 7.12.0
+
+### Changed
+
+* Minor internal changes
+
+
+## hipSOLVER 3.2.0 for ROCm 7.2.0
+
+### Added
+
+* Added ability to control rocSOLVER logging using the environment variables `ROCSOLVER_LEVELS` and `ROCSOLVER_LAYER`
+
+
 ## hipSOLVER 3.1.0 for ROCm 7.1.0
 
 ### Added
 
 * Extended test suites for hipsolverDn compatibility functions
-* Added ability to control rocSOLVER logging using the environment variables `ROCSOLVER_LEVELS` and `ROCSOLVER_LAYER` 
 
 ### Changed
 

@@ -1,6 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2018-2025, Advanced Micro Devices, Inc. All rights reserved.
-
 #pragma once
 
 #include "ck_tile/host/arg_parser.hpp"
@@ -12,11 +11,15 @@
 #include "ck_tile/host/device_prop.hpp"
 #include "ck_tile/host/fill.hpp"
 #include "ck_tile/host/flush_icache.hpp"
+#include "ck_tile/host/high_res_cpu_clock.hpp"
 #include "ck_tile/host/hip_check_error.hpp"
 #include "ck_tile/host/host_tensor.hpp"
+#include "ck_tile/host/host_tensor_io.hpp"
 #include "ck_tile/host/joinable_thread.hpp"
 #include "ck_tile/host/kernel_launch.hpp"
+#include "ck_tile/host/mx_processing.hpp"
 #include "ck_tile/host/permute_pk_int4.hpp"
+#include "ck_tile/host/pinned_host_releaser.hpp"
 #include "ck_tile/host/ranges.hpp"
 #include "ck_tile/host/reference/reference_batched_contraction.hpp"
 #include "ck_tile/host/reference/reference_batched_dropout.hpp"
@@ -24,9 +27,11 @@
 #include "ck_tile/host/reference/reference_batched_elementwise.hpp"
 #include "ck_tile/host/reference/reference_batched_gemm.hpp"
 #include "ck_tile/host/reference/reference_batched_masking.hpp"
+#include "ck_tile/host/reference/reference_batched_mx_descale.hpp"
 #include "ck_tile/host/reference/reference_batched_rotary_position_embedding.hpp"
 #include "ck_tile/host/reference/reference_batched_softmax.hpp"
 #include "ck_tile/host/reference/reference_batched_transpose.hpp"
+#include "ck_tile/host/reference/reference_blocked_attention.hpp"
 #include "ck_tile/host/reference/reference_elementwise.hpp"
 #include "ck_tile/host/reference/reference_fused_moe.hpp"
 #include "ck_tile/host/reference/reference_gemm.hpp"

@@ -1,5 +1,5 @@
 /* **************************************************************************
- * Copyright (C) 2020-2025 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2020-2026 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -34,6 +34,7 @@
 #include "common/misc/rocsolver.hpp"
 #include "common/misc/rocsolver_arguments.hpp"
 #include "common/misc/rocsolver_test.hpp"
+#include "common/misc/rocsolver_timer.hpp"
 
 template <bool STRIDED, typename T, typename U>
 void sygvd_hegvd_checkBadArgs(const rocblas_handle handle,
@@ -353,22 +354,20 @@ void sygvd_hegvd_getError(const rocblas_handle handle,
 
     for(rocblas_int b = 0; b < bc; ++b)
     {
-        if(evect == rocblas_evect_none)
+        // compare eigenvalues with LAPACK
+        // error is ||hD - hDRes|| / ||hD||
+        // using frobenius norm
+        if(hInfoRes[b][0] == 0)
         {
-            // only eigenvalues needed; can compare with LAPACK
-
-            // error is ||hD - hDRes|| / ||hD||
-            // using frobenius norm
-            if(hInfoRes[b][0] == 0)
-            {
-                err = norm_error('F', 1, n, 1, hD[b], hDRes[b]);
-                *max_err = err > *max_err ? err : *max_err;
-            }
+            err = norm_error('F', 1, n, 1, hD[b], hDRes[b]);
+            *max_err = rocblas_max_nan(err, *max_err);
         }
-        else
+
+        if(evect == rocblas_evect_original)
         {
             // both eigenvalues and eigenvectors needed; need to implicitly test
-            // eigenvectors due to non-uniqueness of eigenvectors under scaling
+            // eigenvectors due to non-uniqueness of eigenvectors under scaling.
+            // todo: calculate B-orthogonality of evectors?
             if(hInfoRes[b][0] == 0)
             {
                 T alpha = 1;
@@ -412,7 +411,7 @@ void sygvd_hegvd_getError(const rocblas_handle handle,
                 // error is ||hA - hARes|| / ||hA||
                 // using frobenius norm
                 err = norm_error('F', n, n, lda, hA[b], hARes[b]);
-                *max_err = err > *max_err ? err : *max_err;
+                *max_err = rocblas_max_nan(err, *max_err);
             }
         }
     }
@@ -502,7 +501,7 @@ void sygvd_hegvd_getPerfData(const rocblas_handle handle,
     // gpu-lapack performance
     hipStream_t stream;
     CHECK_ROCBLAS_ERROR(rocblas_get_stream(handle, &stream));
-    double start;
+    rocsolver_timer timer;
 
     if(profile > 0)
     {
@@ -519,12 +518,12 @@ void sygvd_hegvd_getPerfData(const rocblas_handle handle,
         sygvd_hegvd_initData<false, true, T>(handle, itype, evect, n, dA, lda, stA, dB, ldb, stB,
                                              bc, hA, hB, A, B, false, singular);
 
-        start = get_time_us_sync(stream);
+        timer.start(stream);
         rocsolver_sygvd_hegvd(STRIDED, handle, itype, evect, uplo, n, dA.data(), lda, stA,
                               dB.data(), ldb, stB, dD.data(), stD, dE.data(), stE, dInfo.data(), bc);
-        *gpu_time_used += get_time_us_sync(stream) - start;
+        timer.end(stream);
     }
-    *gpu_time_used /= hot_calls;
+    *gpu_time_used = timer.get_combined();
 }
 
 template <bool BATCHED, bool STRIDED, typename T>
@@ -553,6 +552,22 @@ void testing_sygvd_hegvd(Arguments& argus)
 
     rocblas_stride stARes = (argus.unit_check || argus.norm_check) ? stA : 0;
     rocblas_stride stDRes = (argus.unit_check || argus.norm_check) ? stD : 0;
+
+    {
+        // 0 = auto, 1 = 1-stage (default), 2 = 2-stage
+        const rocsolver_alg_mode hetrd_mode //
+            = (argus.hetrd_alg_mode == 2) ? rocsolver_alg_mode_2stage
+            : (argus.hetrd_alg_mode == 1) ? rocsolver_alg_mode_1stage
+                                          : rocsolver_alg_mode_auto;
+        EXPECT_ROCBLAS_STATUS(rocsolver_set_alg_mode(handle, rocsolver_function_hetrd, hetrd_mode),
+                              rocblas_status_success);
+
+        rocsolver_alg_mode check_mode;
+        EXPECT_ROCBLAS_STATUS(rocsolver_get_alg_mode(handle, rocsolver_function_hetrd, &check_mode),
+                              rocblas_status_success);
+
+        EXPECT_EQ(check_mode, hetrd_mode);
+    }
 
     // check non-supported values
     if(uplo == rocblas_fill_full || evect == rocblas_evect_tridiagonal)
@@ -680,7 +695,7 @@ void testing_sygvd_hegvd(Arguments& argus)
                                              hDRes, hInfo, hInfoRes, &max_error, argus.singular);
 
         // collect performance data
-        if(argus.timing)
+        if(argus.timing && hot_calls > 0)
             sygvd_hegvd_getPerfData<STRIDED, T>(
                 handle, itype, evect, uplo, n, dA, lda, stA, dB, ldb, stB, dD, stD, dE, stE, dInfo,
                 bc, hA, hB, hD, hInfo, &gpu_time_used, &cpu_time_used, hot_calls, argus.profile,
@@ -721,7 +736,7 @@ void testing_sygvd_hegvd(Arguments& argus)
                                              hDRes, hInfo, hInfoRes, &max_error, argus.singular);
 
         // collect performance data
-        if(argus.timing)
+        if(argus.timing && hot_calls > 0)
             sygvd_hegvd_getPerfData<STRIDED, T>(
                 handle, itype, evect, uplo, n, dA, lda, stA, dB, ldb, stB, dD, stD, dE, stE, dInfo,
                 bc, hA, hB, hD, hInfo, &gpu_time_used, &cpu_time_used, hot_calls, argus.profile,

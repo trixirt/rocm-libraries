@@ -1,4 +1,4 @@
-// Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -56,7 +56,7 @@ template<bool Scrambled, class Engine, class Constant>
 __forceinline__ __host__ __device__
 Engine create_engine(const Constant*           vectors,
                      [[maybe_unused]] Constant scramble_constant,
-                     const unsigned int        offset)
+                     const unsigned long long  offset)
 {
     if constexpr(Scrambled)
     {
@@ -75,9 +75,11 @@ template<unsigned int OutputPerThread,
          class Engine,
          class Constant,
          class T,
-         class Distribution,
-         host::target_arch Arch = host::target_arch::unknown>
-void generate_sobol_host(dim3,
+         class Distribution>
+struct generate_sobol_host
+{
+    template<host::target_arch Arch = host::target_arch::unknown>
+    static void generate(dim3,
                          dim3,
                          dim3,
                          dim3,
@@ -87,7 +89,8 @@ void generate_sobol_host(dim3,
                          const Constant*,
                          const unsigned int,
                          Distribution)
-{}
+    {}
+};
 
 template<unsigned int OutputPerThread,
          bool         Scrambled,
@@ -96,14 +99,13 @@ template<unsigned int OutputPerThread,
          class T,
          class Distribution,
          int block_size>
-__global__
-    __launch_bounds__(block_size)
-void generate_sobol_kernel(T*                 data,
-                           const size_t       n,
-                           const Constant*    direction_vectors,
-                           const Constant*    scramble_constants,
-                           const unsigned int offset,
-                           Distribution       distribution)
+__global__ __launch_bounds__(block_size)
+void generate_sobol_kernel(T*                       data,
+                           const size_t             n,
+                           const Constant*          direction_vectors,
+                           const Constant*          scramble_constants,
+                           const unsigned long long offset,
+                           Distribution             distribution)
 #else
 template<unsigned int OutputPerThread,
          bool         Scrambled,
@@ -114,7 +116,7 @@ template<unsigned int OutputPerThread,
          int block_size>
 __global__ __launch_bounds__(block_size)
 void generate_sobol_kernel(
-    T*, const size_t, const Constant*, const Constant*, const unsigned int, Distribution)
+    T*, const size_t, const Constant*, const Constant*, const unsigned long long, Distribution)
 {}
 
 template<unsigned int OutputPerThread,
@@ -122,18 +124,20 @@ template<unsigned int OutputPerThread,
          class Engine,
          class Constant,
          class T,
-         class Distribution,
-         host::target_arch Arch = host::target_arch::unknown>
-void generate_sobol_host(dim3               block_idx,
-                         dim3               thread_idx,
-                         dim3               grid_dim,
-                         dim3               block_dim,
-                         T*                 data,
-                         const size_t       n,
-                         const Constant*    direction_vectors,
-                         const Constant*    scramble_constants,
-                         const unsigned int offset,
-                         Distribution       distribution)
+         class Distribution>
+struct generate_sobol_host
+{
+    template<host::target_arch Arch = host::target_arch::unknown>
+    static void generate(dim3 block_idx,
+                         dim3 thread_idx,
+                         dim3 grid_dim,
+                         dim3 block_dim,
+                         T* __restrict__ data,
+                         const size_t             n,
+                         const Constant*          direction_vectors,
+                         const Constant*          scramble_constants,
+                         const unsigned long long offset,
+                         Distribution             distribution)
 #endif
 {
 #ifdef __HIP_DEVICE_COMPILE__
@@ -162,12 +166,14 @@ void generate_sobol_host(dim3               block_idx,
             // On AMD GPUs we must use a constexpr size shared array for performance.
             // But this code won't compile with NVCC, because we are in a __host__ __device__
             // function.
-        __shared__ Constant shared_vectors[vector_size];
+        __shared__
+            Constant shared_vectors[vector_size];
 #else
-            // NVCC won't accept extern __shared__ Constant shared_bytes[];
-            // Thereby we must resort to aliasing.
-            extern __shared__ unsigned char shared_bytes[];
-            auto* shared_vectors = reinterpret_cast<Constant*>(&shared_bytes[0]);
+                // NVCC won't accept extern __shared__ Constant shared_bytes[];
+                // Thereby we must resort to aliasing.
+                extern __shared__
+                unsigned char shared_bytes[];
+                auto*         shared_vectors = reinterpret_cast<Constant*>(&shared_bytes[0]);
 #endif
             if(thread_idx.x < vector_size)
             {
@@ -263,6 +269,9 @@ void generate_sobol_host(dim3               block_idx,
         }
     }
 }
+#ifndef __HIP_DEVICE_COMPILE__
+};
+#endif
 
 template<bool Is64, bool Scrambled, bool UseSharedVectors>
 struct sobol_device_engine;
@@ -365,22 +374,22 @@ private:
         {
             if constexpr(Scrambled)
             {
-                return rocrand_h_scrambled_sobol64_direction_vectors;
+                return rocrand_device::detail::rocrand_h_scrambled_sobol64_direction_vectors;
             }
             else
             {
-                return rocrand_h_sobol64_direction_vectors;
+                return rocrand_device::detail::rocrand_h_sobol64_direction_vectors;
             }
         }
         else
         {
             if constexpr(Scrambled)
             {
-                return rocrand_h_scrambled_sobol32_direction_vectors;
+                return rocrand_device::detail::rocrand_h_scrambled_sobol32_direction_vectors;
             }
             else
             {
-                return rocrand_h_sobol32_direction_vectors;
+                return rocrand_device::detail::rocrand_h_sobol32_direction_vectors;
             }
         }
 #pragma clang diagnostic pop
@@ -426,11 +435,11 @@ private:
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
         if constexpr(Is64)
         {
-            return h_scrambled_sobol64_constants;
+            return rocrand_device::detail::h_scrambled_sobol64_constants;
         }
         else
         {
-            return h_scrambled_sobol32_constants;
+            return rocrand_device::detail::h_scrambled_sobol32_constants;
         }
 #pragma clang diagnostic pop
     }
@@ -637,7 +646,7 @@ public:
             return status;
         }
 
-        m_current_offset = static_cast<unsigned int>(m_offset);
+        m_current_offset = m_offset;
         m_initialized    = true;
 
         return ROCRAND_STATUS_SUCCESS;
@@ -677,7 +686,7 @@ public:
             // On AMD GPUs we must resort to static shared memory for performance.
             = 0;
 #else
-            = system_type::is_device() ? ((Is64 ? 64 : 32) * sizeof(constant_type)) : 0;
+                = system_type::is_device() ? ((Is64 ? 64 : 32) * sizeof(constant_type)) : 0;
 #endif
 
         const size_t       size             = data_size / m_dimensions;
@@ -727,18 +736,13 @@ public:
                 return ROCRAND_STATUS_INTERNAL_ERROR;
             }
 
-            auto generate_sobol_host_kernel = [&] __host__ __device__(auto arch, auto... args)
-            {
-                generate_sobol_host<output_per_thread,
-                                    Scrambled,
-                                    engine_type,
-                                    constant_type,
-                                    T,
-                                    Distribution,
-                                    arch>(args...);
-            };
-            status = system_type::template launch<block_size_provider>(generate_sobol_host_kernel,
-                                                                       target_arch,
+            status = system_type::template launch<generate_sobol_host<output_per_thread,
+                                                                      Scrambled,
+                                                                      engine_type,
+                                                                      constant_type,
+                                                                      T,
+                                                                      Distribution>,
+                                                  block_size_provider>(target_arch,
                                                                        dim3(blocks_x, blocks_y),
                                                                        dim3(threads),
                                                                        shared_mem_bytes,
@@ -809,7 +813,7 @@ private:
 
     bool                 m_initialized        = false;
     unsigned int         m_dimensions         = 1;
-    unsigned int         m_current_offset     = 0;
+    unsigned long long   m_current_offset     = 0;
     const constant_type* m_direction_vectors  = nullptr;
     const constant_type* m_scramble_constants = nullptr;
 

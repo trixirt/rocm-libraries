@@ -26,6 +26,7 @@
 #pragma once
 
 #include <miopen/fusion/solvers.hpp>
+#include <miopen/target_properties.hpp>
 
 namespace miopen {
 namespace solver {
@@ -92,8 +93,11 @@ inline bool WinoCommonIsApplicable(const FusionContext& context, const FusionDes
         return false;
     if(!conv_problem.IsDirectionForward())
         return false;
+
     const auto& target = conv_ctx.GetStream().GetTargetProperties();
-    if(target.Xnack() && *target.Xnack())
+    if(target.isXnackEnabled())
+        return false;
+    if(IsGfx9ConsumerApu(target))
         return false;
 
     return true;

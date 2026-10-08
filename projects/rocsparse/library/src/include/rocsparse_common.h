@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
- * Copyright (C) 2024-2025 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2024-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,36 +25,14 @@
 #pragma once
 
 #include "rocsparse-types.h"
+#include "rocsparse_conjugate.hpp"
+#include "rocsparse_dense_transpose.hpp"
+#include "rocsparse_dense_transpose_back.hpp"
+#include "rocsparse_valset.hpp"
 
+//
 namespace rocsparse
 {
-    template <typename I, typename T, typename U>
-    rocsparse_status dense_transpose_template(rocsparse_handle handle,
-                                              I                m,
-                                              I                n,
-                                              U                alpha_device_host,
-                                              const T*         A,
-                                              int64_t          lda,
-                                              T*               B,
-                                              int64_t          ldb);
-
-    rocsparse_status dense_transpose(rocsparse_handle   handle,
-                                     int64_t            m,
-                                     int64_t            n,
-                                     rocsparse_datatype source_datatype,
-                                     const void*        source,
-                                     int64_t            source_ld,
-                                     rocsparse_datatype target__datatype,
-                                     void*              target,
-                                     int64_t            target_ld);
-
-    template <typename I, typename T>
-    rocsparse_status dense_transpose_back(
-        rocsparse_handle handle, I m, I n, const T* A, int64_t lda, T* B, int64_t ldb);
-
-    template <typename I, typename T>
-    rocsparse_status conjugate(rocsparse_handle handle, I length, T* array);
-
     template <typename I, typename T>
     rocsparse_status valset(rocsparse_handle handle, I length, T value, T* array);
 
@@ -66,6 +44,25 @@ namespace rocsparse
     rocsparse_status
         scale_array(rocsparse_handle handle, I length, const T* scalar_device_host, A* array);
 
+    // Overload that takes the scalar pointer mode explicitly instead of reading it from the
+    // handle. Useful when the scalar's memory space is described elsewhere (e.g. a dense vector
+    // descriptor) and the handle pointer mode should not be involved.
+    template <typename I, typename A, typename T>
+    rocsparse_status scale_array(rocsparse_handle       handle,
+                                 I                      length,
+                                 rocsparse_pointer_mode pointer_mode,
+                                 const T*               scalar_device_host,
+                                 A*                     array);
+
+    template <typename I, typename X, typename Y, typename T>
+    rocsparse_status axpby_array_batched(rocsparse_handle handle,
+                                         I                length,
+                                         rocsparse_int    num_extra,
+                                         const T*         gamma_device_array,
+                                         const X**        x_arrays,
+                                         const T*         beta_device_host,
+                                         Y*               y_array);
+
     template <typename I, typename A, typename T>
     rocsparse_status scale_2d_array(rocsparse_handle handle,
                                     I                m,
@@ -76,16 +73,4 @@ namespace rocsparse
                                     const T*         scalar_device_host,
                                     A*               array,
                                     rocsparse_order  order);
-
-    template <typename I, typename J>
-    rocsparse_status copy(rocsparse_handle     handle,
-                          int64_t              length,
-                          const I*             in,
-                          J*                   out,
-                          rocsparse_index_base idx_base_in,
-                          rocsparse_index_base idx_base_out);
-
-    template <typename T>
-    rocsparse_status copy_and_scale(
-        rocsparse_handle handle, int64_t length, const T* in, T* out, const T* scalar_device_host);
 }

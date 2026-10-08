@@ -62,9 +62,10 @@ function(add_hipstdpar_test TEST TEST_TYPE INTERPOSE_ALLOC)
         )
     endforeach()
     else()
-        add_relative_test(${TEST_TARGET} ${TEST_TARGET})
+        add_relative_test(${TEST_TARGET} ${TEST_TARGET} ${DEFAULT_GPU_RESOURCE})
         set_tests_properties(${TEST_TARGET}
             PROPERTIES
+                RESOURCE_GROUPS "1,${DEFAULT_GPU_RESOURCE}:1"
                 LABELS "hip"
         )
     endif()
@@ -103,6 +104,8 @@ set(ROCPRIM_LOCATION ${ROCPRIM_INCLUDE_DIR})
 # Add tests
 add_hipstdpar_test("algorithms" "compile" OFF)
 add_hipstdpar_test("interpose" "compile" ON)
+add_hipstdpar_test("realloc" "run" ON)
+add_hipstdpar_test("zero_size_alloc" "run" ON)
 
 # Restore global state
 set(CMAKE_CXX_STANDARD ${ROCTHRUST_CMAKE_CXX_STANDARD})

@@ -1,7 +1,6 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 #pragma once
-
 template <typename PrecType,
           typename FlatmmConfig,
           int ScaleGranularityM    = -1,
@@ -99,11 +98,11 @@ int run_flatmm_example_with_layouts(int argc,
     ck_tile::HostTensor<BDataType> b_shuffle_host = [&]() {
         if constexpr(FlatmmConfig::TiledMMAPermuteN)
         {
-            return shuffle_b_v1<FlatmmConfig>(b_origin_host);
+            return ck_tile::shuffle_b_v1<FlatmmConfig>(b_origin_host);
         }
         else
         {
-            return shuffle_b<FlatmmConfig>(b_origin_host);
+            return ck_tile::shuffle_b_v0<FlatmmConfig>(b_origin_host);
         }
     }();
     ck_tile::DeviceMem b_shuffle_dev_buf(b_shuffle_host.get_element_space_size_in_bytes());

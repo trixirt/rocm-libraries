@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
-* Copyright (C) 2021-2025 Advanced Micro Devices, Inc. All rights Reserved.
+* Copyright (C) 2021-2026 Advanced Micro Devices, Inc. All rights Reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a copy
 * of this software and associated documentation files (the "Software"), to deal
@@ -39,7 +39,9 @@ namespace rocsparse
                                  bool    conj_B,
                                  I       ncol,
                                  int64_t nnz,
+                                 I       m,
                                  I       n,
+                                 int64_t batch_count,
                                  int64_t batch_stride_A,
                                  ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),
                                  const I* __restrict__ coo_row_ind,
@@ -67,8 +69,10 @@ namespace rocsparse
         void coommnn_atomic_remainder(bool    conj_A,
                                       bool    conj_B,
                                       I       ncol_offset,
+                                      I       m,
                                       I       n,
                                       int64_t nnz,
+                                      int64_t batch_count,
                                       int64_t batch_stride_A,
                                       ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),
                                       const I* __restrict__ coo_row_ind,
@@ -95,7 +99,9 @@ namespace rocsparse
         void coommtn_atomic_main(bool    conj_A,
                                  bool    conj_B,
                                  int64_t nnz,
+                                 I       m,
                                  I       n,
+                                 int64_t batch_count,
                                  int64_t batch_stride_A,
                                  ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),
                                  const I* __restrict__ coo_row_ind,

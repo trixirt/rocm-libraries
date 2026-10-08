@@ -29,44 +29,86 @@ include( CMakeDependentOption )
 cmake_dependent_option( ROCWMMA_BUILD_VALIDATION_TESTS "Build validation tests" ON "ROCWMMA_BUILD_TESTS" OFF )
 cmake_dependent_option( ROCWMMA_BUILD_BENCHMARK_TESTS "Build benchmarking tests" OFF "ROCWMMA_BUILD_TESTS" OFF )
 cmake_dependent_option( ROCWMMA_BUILD_EXTENDED_TESTS "Build extended test parameter coverage" OFF "ROCWMMA_BUILD_TESTS" OFF )
+cmake_dependent_option( ROCWMMA_BUILD_REGRESSION_TESTS "Build regression tests" ON "ROCWMMA_BUILD_TESTS" OFF )
 cmake_dependent_option( ROCWMMA_USE_SYSTEM_GOOGLETEST "Use system Google Test library instead of downloading and building it" OFF "ROCWMMA_BUILD_TESTS" OFF )
 
-add_compile_options(-mcmodel=large)
 if(ROCWMMA_CODE_COVERAGE)
     add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
     add_link_options(-fprofile-instr-generate)
 endif()
-add_link_options(-mcmodel=large)
+
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" PROCESSOR_LOWER)
+if(NOT PROCESSOR_LOWER MATCHES "^(arm|aarch64)")
+    add_compile_options(-mcmodel=large)
+    add_link_options(-mcmodel=large)
+    if(NOT WIN32)
+        add_link_options(-Wl,--gc-sections)
+    endif()
+endif()
+
+
 
 # Test/benchmark requires additional dependencies
 if(ROCWMMA_USE_SYSTEM_GOOGLETEST)
-  find_package(GTest 1.12.1 REQUIRED)
+  find_package(GTest 1.16.0 REQUIRED)
 else()
   include( FetchContent )
+
+  # Suppress ROCMChecks WARNING on GoogleTest
+  set(ROCM_DISABLE_CHECKS FALSE)
+  macro(rocm_check_toolchain_var var access value list_file)
+      if(NOT ROCM_DISABLE_CHECKS)
+          _rocm_check_toolchain_var("${var}" "${access}" "${value}" "${list_file}")
+      endif()
+  endmacro()
 
   FetchContent_Declare(
     googletest
     GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG release-1.12.1
+    GIT_TAG v1.16.0
   )
-  FetchContent_GetProperties(googletest)
-  if(NOT googletest_POPULATED)
 
-    # Fetch the content using default details
-    FetchContent_Populate(googletest)
-    # Save the shared libs setting, then force to static libs
-    set(BUILD_SHARED_LIBS_OLD ${BUILD_SHARED_LIBS})
-    set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "Build SHARED libraries" FORCE)
+  # Turn off gtest installation
+  set(INSTALL_GTEST OFF)
 
-    # Turn off gtest installation
-    set(INSTALL_GTEST OFF)
+  # Save the shared libs setting, then force to static libs
+  set(BUILD_SHARED_LIBS_OLD ${BUILD_SHARED_LIBS})
+  set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "Build SHARED libraries" FORCE)
 
-    # Add gtest targets as static libs
-    add_subdirectory(${googletest_SOURCE_DIR} ${googletest_BINARY_DIR})
-
-    # Restore shared libs setting
-    set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_OLD} CACHE INTERNAL "Build SHARED libraries" FORCE)
+  # Fetch the content using default details
+  set(ROCM_DISABLE_CHECKS TRUE)
+  if(WIN32 AND BUILD_SHARED_LIBS_OLD)
+    # We build gtest as a static lib, but the test binaries are built as shared
+    # libraries.  Force gtest to link against a shared (DLL) version of the C
+    # run-time library.
+    set(gtest_force_shared_crt ON CACHE BOOL "Use shared (DLL) run-time library even when Google Test is built as static lib." FORCE)
   endif()
+  FetchContent_MakeAvailable(googletest)
+  set(ROCM_DISABLE_CHECKS FALSE)
+
+  # Restore shared libs setting
+  set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_OLD} CACHE INTERNAL "Build SHARED libraries" FORCE)
+endif()
+
+# YAML-driven CTest test categorisation for the *installed* tree only.
+# The shared helper apply_ctest_category_labels(yaml, install_test_file)
+# scans the install-tree CTestTestfile.cmake fragments we hand-roll
+# below for `add_test()` lines and appends explicit
+# set_tests_properties() lines so `ctest -L <tier>` works against the
+# install tree. Build-tree tests are intentionally not labelled here
+# (mirrors the hipDNN approach).
+set(_ROCWMMA_TEST_CATEGORIES_YAML "${PROJECT_SOURCE_DIR}/test_categories.yaml")
+set(_ROCWMMA_SHARED_CTEST          "${ROCM_LIBRARIES_ROOT}/shared/ctest/TestCategories.cmake")
+if(EXISTS "${_ROCWMMA_SHARED_CTEST}" AND EXISTS "${_ROCWMMA_TEST_CATEGORIES_YAML}")
+    include("${_ROCWMMA_SHARED_CTEST}")
+    message(STATUS "rocWMMA: YAML-based CTest categorization enabled (install tree only)")
+else()
+    if(NOT EXISTS "${_ROCWMMA_SHARED_CTEST}")
+        message(STATUS "rocWMMA: shared/ctest not found at ${_ROCWMMA_SHARED_CTEST}; skipping CTest categories")
+    endif()
+    if(NOT EXISTS "${_ROCWMMA_TEST_CATEGORIES_YAML}")
+        message(STATUS "rocWMMA: ${_ROCWMMA_TEST_CATEGORIES_YAML} not found; skipping CTest categories")
+    endif()
 endif()
 
 set(ROCWMMA_TEST_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR})
@@ -80,6 +122,21 @@ file(WRITE "${INSTALL_TEST_FILE}"
 # It differs slightly from the default testfile, and you may encounter issues because of that.
 ]=]
 )
+set(INSTALL_SMOKE_TEST_FILE "${CMAKE_CURRENT_BINARY_DIR}/install_smoke_CTestTestfile.cmake")
+file(WRITE "${INSTALL_SMOKE_TEST_FILE}"
+[=[
+# This is a test file generated by rocWMMA for install time.
+# It differs slightly from the default testfile, and you may encounter issues because of that.
+]=]
+)
+set(INSTALL_REGRESSION_TEST_FILE "${CMAKE_CURRENT_BINARY_DIR}/install_regression_CTestTestfile.cmake")
+file(WRITE "${INSTALL_REGRESSION_TEST_FILE}"
+[=[
+# This is a test file generated by rocWMMA for install time.
+# It differs slightly from the default testfile, and you may encounter issues because of that.
+]=]
+)
+
 
 # Regular gtests that don't require any special
 # designation for validation or benchmarking
@@ -87,10 +144,12 @@ function(add_rocwmma_test TEST_TARGET TEST_SOURCE)
 
   list(APPEND TEST_SOURCE ${ARGN})
   add_executable(${TEST_TARGET} ${TEST_SOURCE})
-  target_link_libraries(${TEST_TARGET} rocwmma gtest)
-  target_link_libraries(${TEST_TARGET} OpenMP::OpenMP_CXX "-L${HIP_CLANG_ROOT}/lib")
+  target_link_libraries(${TEST_TARGET} rocwmma GTest::gtest)
+  target_link_libraries(${TEST_TARGET} ${ROCWMMA_OPENMP_LIBRARY})
   if(UNIX)
-    target_link_libraries(${TEST_TARGET} "-Wl,-rpath=$ORIGIN/../llvm/lib" "-fno-rtlib-add-rpath")
+    set_target_properties(${TEST_TARGET} PROPERTIES INSTALL_RPATH "${ROCWMMA_OPENMP_INSTALL_RPATH}")
+    set_target_properties(${TEST_TARGET} PROPERTIES BUILD_RPATH "${ROCWMMA_OPENMP_BUILD_RPATH}")
+    target_link_libraries(${TEST_TARGET} "-fno-rtlib-add-rpath")
   endif()
   target_include_directories(${TEST_TARGET} PRIVATE
                              ${CMAKE_CURRENT_SOURCE_DIR}
@@ -137,8 +196,18 @@ function(add_rocwmma_test TEST_TARGET TEST_SOURCE)
           set(EXE_NAME "${TEST_TARGET}")
       endif()
   endif()
-  file(APPEND "${INSTALL_TEST_FILE}" "add_test(${TEST_TARGET} \"../${EXE_NAME}\")\n")
+  file(APPEND "${INSTALL_TEST_FILE}" "add_test(${TEST_TARGET} \"../${EXE_NAME}\" --omit 5)\n")
   file(APPEND "${INSTALL_TEST_FILE}" "set_tests_properties(${TEST_TARGET} PROPERTIES SKIP_REGULAR_EXPRESSION \"no ROCm-capable device;unsupported host device\")\n")
+  file(APPEND "${INSTALL_TEST_FILE}" "add_test(\"${TEST_TARGET} smoke\" \"../${EXE_NAME}\" --emulation smoke --omit 5)\n")
+  file(APPEND "${INSTALL_TEST_FILE}" "set_tests_properties(\"${TEST_TARGET} smoke\" PROPERTIES SKIP_REGULAR_EXPRESSION \"no ROCm-capable device;unsupported host device\")\n")
+  file(APPEND "${INSTALL_TEST_FILE}" "add_test(\"${TEST_TARGET} regression\" \"../${EXE_NAME}\" --emulation regression --omit 5)\n")
+  file(APPEND "${INSTALL_TEST_FILE}" "set_tests_properties(\"${TEST_TARGET} regression\" PROPERTIES SKIP_REGULAR_EXPRESSION \"no ROCm-capable device;unsupported host device\")\n")
+
+  file(APPEND "${INSTALL_SMOKE_TEST_FILE}" "add_test(\"${TEST_TARGET} smoke\" \"../../${EXE_NAME}\" --emulation smoke --omit 5)\n")
+  file(APPEND "${INSTALL_SMOKE_TEST_FILE}" "set_tests_properties(\"${TEST_TARGET} smoke\" PROPERTIES SKIP_REGULAR_EXPRESSION \"no ROCm-capable device;unsupported host device\")\n")
+
+  file(APPEND "${INSTALL_REGRESSION_TEST_FILE}" "add_test(\"${TEST_TARGET} regression\" \"../../${EXE_NAME}\" --emulation regression --omit 5)\n")
+  file(APPEND "${INSTALL_REGRESSION_TEST_FILE}" "set_tests_properties(\"${TEST_TARGET} regression\" PROPERTIES SKIP_REGULAR_EXPRESSION \"no ROCm-capable device;unsupported host device\")\n")
 endfunction()
 
 # Targets that implement specifically validation configuration
@@ -159,9 +228,55 @@ add_subdirectory(gemm)
 add_subdirectory(unit)
 add_subdirectory(dlrm)
 
+if(ROCWMMA_BUILD_REGRESSION_TESTS)
+    add_subdirectory(regression)
+endif()
+
+# Sharded smoke entry for load_store_matrix_coop_sync_test: runs 1/8 of
+# the smoke tests via GTest's built-in sharding.  The full smoke run has
+# ~24K tests; this shard brings it down to ~3K tests.
+file(APPEND "${INSTALL_TEST_FILE}" "add_test(\"load_store_matrix_coop_sync_test shard0 smoke\" \"../load_store_matrix_coop_sync_test\" --emulation smoke --omit 5)\n")
+file(APPEND "${INSTALL_TEST_FILE}" "set_tests_properties(\"load_store_matrix_coop_sync_test shard0 smoke\" PROPERTIES SKIP_REGULAR_EXPRESSION \"no ROCm-capable device;unsupported host device\")\n")
+file(APPEND "${INSTALL_TEST_FILE}" "set_tests_properties(\"load_store_matrix_coop_sync_test shard0 smoke\" PROPERTIES ENVIRONMENT \"GTEST_TOTAL_SHARDS=8;GTEST_SHARD_INDEX=0\")\n")
+
+# Bake YAML-driven category labels into each install-tree
+# CTestTestfile.cmake fragment so `ctest --test-dir
+# $THEROCK_BIN_DIR/rocwmma[/{smoke,regression}] -L <tier>` works
+# against the install tree. Passing the install file as the 2nd
+# argument tells the shared helper to scan it for the test names
+# already written via add_test() above and emit explicit
+# set_tests_properties(... LABELS ...) lines (the only form ctest's
+# script interpreter exposes through --print-labels / -L).
+if(COMMAND apply_ctest_category_labels)
+    apply_ctest_category_labels(
+        "${_ROCWMMA_TEST_CATEGORIES_YAML}"
+        "${INSTALL_TEST_FILE}"
+    )
+    apply_ctest_category_labels(
+        "${_ROCWMMA_TEST_CATEGORIES_YAML}"
+        "${INSTALL_SMOKE_TEST_FILE}"
+    )
+    apply_ctest_category_labels(
+        "${_ROCWMMA_TEST_CATEGORIES_YAML}"
+        "${INSTALL_REGRESSION_TEST_FILE}"
+    )
+endif()
+
 rocm_install(
     FILES "${INSTALL_TEST_FILE}"
     DESTINATION "${CMAKE_INSTALL_BINDIR}/${PROJECT_NAME}"
+    COMPONENT tests
+    RENAME "CTestTestfile.cmake"
+)
+rocm_install(
+    FILES "${INSTALL_SMOKE_TEST_FILE}"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}/${PROJECT_NAME}/smoke"
+    COMPONENT tests
+    RENAME "CTestTestfile.cmake"
+)
+rocm_install(
+    FILES "${INSTALL_REGRESSION_TEST_FILE}"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}/${PROJECT_NAME}/regression"
     COMPONENT tests
     RENAME "CTestTestfile.cmake"
 )

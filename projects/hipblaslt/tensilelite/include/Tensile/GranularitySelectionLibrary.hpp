@@ -30,10 +30,14 @@
 #include <vector>
 
 #include <Tensile/Debug.hpp>
+#include <Tensile/PredicateDebugger.hpp>
 #include <Tensile/Properties.hpp>
+#include <Tensile/SolutionLibrary.hpp>
 #include <Tensile/Utils.hpp>
 
 #include <Tensile/PropertyMatching.hpp>
+
+#include <tensilelitehost/export.h>
 
 namespace TensileLite
 {
@@ -111,24 +115,20 @@ namespace TensileLite
                 auto rv = solutions.at(index);
 
                 Task task(hardware, problem, *rv);
+                bool predicateMatch = selectionPredicate(task, hardware, *rv, problem);
                 if(debug)
                 {
-                    std::cout << "Exact match: " << rv->description();
-                    rv->problemPredicate->debugEval(problem, std::cout);
-                    std::cout << std::endl;
-                    rv->taskPredicate->debugEval(task, std::cout);
-                    std::cout << std::endl;
+                    PredicateDebugger::printHeader(
+                        std::cout, "Granularity (Exact): " + rv->name());
                     rv->hardwarePredicate->debugEval(hardware, std::cout);
-                    std::cout << std::endl;
+                    rv->problemPredicate->debugEval(problem, std::cout);
+                    rv->taskPredicate->debugEval(task, std::cout);
+                    PredicateDebugger::printFooter(std::cout, predicateMatch);
                 }
 
-                if((*rv->problemPredicate)(problem) && (*rv->taskPredicate)(task) && (*rv->hardwarePredicate)(hardware))
+                if(predicateMatch)
                 {
                     return rv;
-                }
-                else if(debug)
-                {
-                    std::cout << "Predicate failure" << std::endl;
                 }
             }
 
@@ -148,29 +148,23 @@ namespace TensileLite
                 if(myPerformance > bestPerformance)
                 {
                     Task task(hardware, problem, *(row.second));
-                    if((*row.second->problemPredicate)(problem)
-                       && (*row.second->taskPredicate)(task)
-                       && (*row.second->hardwarePredicate)(hardware))
-                    {
-                        bestPerformance = myPerformance;
-                        bestSolution    = row.second;
-
-                        if(debug)
-                            std::cout << " <-- Best so far";
-                    }
-                    else if(debug)
-                    {
-                        std::cout << " <-- Best, but predicate failure";
-                    }
+                    bool predicateMatch
+                        = selectionPredicate(task, hardware, *(row.second), problem);
 
                     if(debug)
                     {
-                        row.second->problemPredicate->debugEval(problem, std::cout);
-                        std::cout << std::endl;
-                        row.second->taskPredicate->debugEval(task, std::cout);
-                        std::cout << std::endl;
+                        PredicateDebugger::printHeader(
+                            std::cout, "Granularity: " + row.second->name());
                         row.second->hardwarePredicate->debugEval(hardware, std::cout);
-                        std::cout << std::endl;
+                        row.second->problemPredicate->debugEval(problem, std::cout);
+                        row.second->taskPredicate->debugEval(task, std::cout);
+                        PredicateDebugger::printFooter(std::cout, predicateMatch);
+                    }
+
+                    if(predicateMatch)
+                    {
+                        bestPerformance = myPerformance;
+                        bestSolution    = row.second;
                     }
                 }
             }
@@ -190,38 +184,25 @@ namespace TensileLite
 
             for(auto const& row : solutions)
             {
-                if(debug)
-                {
-                    std::cout << row.second->description() << ": ";
-                }
-
                 Task task(hardware, problem, *(row.second));
-
-                if(softwarePredicate(searchType, task, hardware, *(row.second), problem)
-                   && (*row.second->hardwarePredicate)(hardware))
-                {
-                    rv.insert(row.second);
-
-                    if(debug)
-                        std::cout << " Works";
-                }
-                else if(debug)
-                {
-                    if(debug)
-                        std::cout << " Predicate failed";
-                }
+                bool predicateMatch = softwarePredicate(searchType, task, hardware, *(row.second), problem)
+                                      && (*row.second->hardwarePredicate)(hardware);
 
                 if(debug)
                 {
+                    PredicateDebugger::printHeader(std::cout, "Granularity: " + row.second->name());
+                    row.second->hardwarePredicate->debugEval(hardware, std::cout);
                     if(searchType == SolutionLibrarySearchType::DEFAULT)
                     {
                         row.second->problemPredicate->debugEval(problem, std::cout);
-                        std::cout << std::endl;
                         row.second->taskPredicate->debugEval(task, std::cout);
-                        std::cout << std::endl;
                     }
-                    row.second->hardwarePredicate->debugEval(hardware, std::cout);
-                    std::cout << std::endl;
+                    PredicateDebugger::printFooter(std::cout, predicateMatch);
+                }
+
+                if(predicateMatch)
+                {
+                    rv.insert(row.second);
                 }
             }
 
@@ -241,10 +222,6 @@ namespace TensileLite
             for(auto const& row : solutions)
             {
                 bool useSolution = false;
-                if(debug)
-                {
-                    std::cout << row.second->description() << ": ";
-                }
 
                 if((*row.second->hardwarePredicate)(hardware))
                 {
@@ -253,13 +230,20 @@ namespace TensileLite
                     {
                         size_t ws = (*row.second).requiredWorkspaceSizeGroupedGemm(problems, hardware);
 
-                        for(int idx = 0; idx < problems.size(); idx++)
+                        for(size_t idx = 0; idx < problems.size(); idx++)
                         {
                             auto problem = problems[idx];
                             Task task(hardware, problem, *(row.second));
                             problem.setWorkspaceSizeGroupedGemm(ws);
                             problem.setGroupedGemmCount(problems.size());
-                            if(!(*row.second->problemPredicate)(problem) || !(*row.second->taskPredicate)(task))
+                            // setGroupedGemm(true) re-aims GroupedGemmEqual,
+                            // SynchronizerSizeCheck and the free-size-B clause on
+                            // this local copy, so it is USO-gated like the widened
+                            // predicate. Task holds a reference to problem, so the
+                            // mutation is visible to taskPredicate either way.
+                            if(problem.getParams().uniformSummationOrder())
+                                problem.setGroupedGemm(true);
+                            if(!selectionPredicate(task, hardware, *(row.second), problem))
                                 useSolution = false;
                         }
                     }
@@ -275,32 +259,29 @@ namespace TensileLite
                            == static_cast<size_t>(-1))
                         {
                             (*row.second).requiredHostWorkspaceSizePerProblem
-                                = (*row.second).requiredHostSizeGroupedGemmSingle(problems[0],hardware);
+                                = (*row.second)
+                                      .requiredHostSizeGroupedGemmSingle(problems[0], hardware);
                         }
                         rv.insert(row.second);
                     }
                 }
+
                 if(debug)
                 {
-                    if(useSolution)
-                        std::cout << " Works";
-                    else
-                        std::cout << " Predicate failed";
-
+                    PredicateDebugger::printHeader(
+                        std::cout, "Granularity (Grouped): " + row.second->name());
+                    row.second->hardwarePredicate->debugEval(hardware, std::cout);
                     if(searchType == SolutionLibrarySearchType::DEFAULT)
                     {
-                        for(int idx = 0; idx < problems.size(); idx++)
+                        for(size_t idx = 0; idx < problems.size(); idx++)
                         {
                             auto problem = problems[idx];
                             Task task(hardware, problem, *(row.second));
                             row.second->problemPredicate->debugEval(problem, std::cout);
-                            std::cout << std::endl;
                             row.second->taskPredicate->debugEval(task, std::cout);
-                            std::cout << std::endl;
                         }
                     }
-                    row.second->hardwarePredicate->debugEval(hardware, std::cout);
-                    std::cout << std::endl;
+                    PredicateDebugger::printFooter(std::cout, useSolution);
                 }
             }
 
@@ -308,3 +289,4 @@ namespace TensileLite
         }
     };
 } // namespace TensileLite
+

@@ -1,5 +1,6 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// // Copyright (c) 2025, Advanced Micro Devices, Inc. All rights reserved.
+
 #pragma once
 #include "ck/utility/data_type.hpp"
 
@@ -24,6 +25,38 @@ struct NumericUtils<e8m0_bexp_t>
     static constexpr int biased_exp_max   = 254;
 
     using bitwise_type = uint8_t;
+};
+
+template <>
+struct NumericUtils<e4m3_scale_t>
+{
+    static constexpr int exp  = 4;
+    static constexpr int mant = 3;
+    static constexpr int bias = 7;
+
+    static constexpr int unbiased_exp_min = -6;
+    static constexpr int unbiased_exp_max = 8;
+    static constexpr int biased_exp_min   = 1;
+    static constexpr int biased_exp_max   = 15;
+
+    static constexpr bool has_inf = false;
+    using bitwise_type            = uint8_t;
+};
+
+template <>
+struct NumericUtils<e5m3_scale_t>
+{
+    static constexpr int exp  = 5;
+    static constexpr int mant = 3;
+    static constexpr int bias = 15;
+
+    static constexpr int unbiased_exp_min = -14;
+    static constexpr int unbiased_exp_max = 16;
+    static constexpr int biased_exp_min   = 1;
+    static constexpr int biased_exp_max   = 31;
+
+    static constexpr bool has_inf = false;
+    using bitwise_type            = uint8_t;
 };
 #endif
 

@@ -1,4 +1,4 @@
-// Copyright (C) 2021 - 2022 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2021 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -31,6 +31,7 @@
 #include <variant>
 #include <vector>
 
+#include "../../include/load_store_ops.h"
 #include "../kernels/callback.h"
 
 //
@@ -185,6 +186,10 @@ public:
     {
     }
     Literal(unsigned int num)
+        : value(std::to_string(num))
+    {
+    }
+    Literal(size_t num)
         : value(std::to_string(num))
     {
     }
@@ -602,6 +607,10 @@ class IntrinsicStore;
 class IntrinsicStorePlanar;
 class Printf;
 
+// Forward declare Statement as a class so it can be used in std::vector<Statement>
+// before all variant types are complete. Statement is defined after all types.
+class Statement;
+
 struct LineBreak
 {
     static std::string render()
@@ -654,30 +663,6 @@ struct CommentLines
     explicit CommentLines(std::initializer_list<std::string> il)
         : comments(il){};
 };
-
-using Statement = std::variant<Assign,
-                               ReturnExpr,
-                               Call,
-                               CallbackLoadDeclaration,
-                               CallbackStoreDeclaration,
-                               CommentLines,
-                               Declaration,
-                               LDSDeclaration,
-                               For,
-                               While,
-                               If,
-                               ElseIf,
-                               Else,
-                               StoreGlobal,
-                               StoreGlobalPlanar,
-                               LineBreak,
-                               Return,
-                               Break,
-                               SyncThreads,
-                               Butterfly,
-                               IntrinsicStore,
-                               IntrinsicStorePlanar,
-                               Printf>;
 
 class Assign
 {
@@ -768,61 +753,235 @@ public:
 class CallbackLoadDeclaration
 {
 public:
-    CallbackLoadDeclaration(const std::string& scalar_type, const std::string& cbtype)
-        : scalar_type(scalar_type)
-        , cbtype(cbtype){};
-    std::string scalar_type;
-    std::string cbtype;
-    // true if loading complex data through a real-valued callback
-    bool        r2c_callback = false;
+    CallbackLoadDeclaration() = default;
+
+    void set_scalar_type(const char* _scalar_type)
+    {
+        scalar_type = _scalar_type;
+    }
+    // Enable use of JIT or funcptr callbacks as necessary.
+    // r2c_callback means we call a real-valued callback twice to load
+    // a complex element.
+    void set_jit_or_funcptr_callback(const char* _jit_symbol,
+                                     bool        _funcptr_callback,
+                                     bool        _r2c_callback)
+    {
+        // jit symbol and funcptr callback are mutually exclusive
+        if(_jit_symbol && _funcptr_callback)
+            throw std::invalid_argument("jit symbol cannot be combined with funcptr callback");
+
+        jit_symbol       = _jit_symbol;
+        funcptr_callback = _funcptr_callback;
+        r2c_callback     = _r2c_callback;
+    }
+
     std::string render() const
     {
+        std::string ret;
         if(r2c_callback)
-            // declare a lambda that calls the real-valued callback
-            // twice to load one complex value
-            return R"lambda(
-    	    auto load_cb = [load_cb_fn](scalar_type* data, size_t offset, void* cbdata, void* sharedMem)
-    	    {
-                auto real_cb = reinterpret_cast<typename callback_type<real_type_t<scalar_type>>::load>(load_cb_fn);
-                return scalar_type
+        {
+            if(jit_symbol)
+            {
+                ret += "// declare a lambda that calls the real JIT callback twice to\n";
+                ret += "// load one complex element\n";
+                ret += "auto load_cb = [](" + scalar_type
+                       + " * data, size_t offset, void* cbdata, void* sharedMem)\n";
+                ret += "  {\n";
+                ret += "  return " + scalar_type + "\n";
+                ret += "    {\n";
+                ret += "        load_cb_jit_fn(reinterpret_cast<real_type_t<" + scalar_type
+                       + ">*>(data), offset * 2, cbdata, sharedMem),\n";
+                ret += "        load_cb_jit_fn(reinterpret_cast<real_type_t<" + scalar_type
+                       + ">*>(data), offset * 2 + 1, cbdata, sharedMem),\n";
+                ret += "    };\n";
+                ret += "  };\n";
+            }
+            else
+            {
+                if(funcptr_callback)
                 {
-                    real_cb(reinterpret_cast<real_type_t<scalar_type>*>(data), offset * 2, cbdata, sharedMem),
-                    real_cb(reinterpret_cast<real_type_t<scalar_type>*>(data), offset * 2 + 1, cbdata, sharedMem),
-                };
-            };
-            )lambda";
+                    ret += "// declare a lambda that calls the real funcptr callback twice to\n";
+                    ret += "// load one complex element\n";
+                    ret += "auto load_cb = [load_cb_fn](" + scalar_type
+                           + "* data, size_t offset, void* cbdata, void* sharedMem)\n";
+                    ret += "  {\n";
+                    ret += "      auto real_cb = reinterpret_cast<typename "
+                           "callback_type<real_type_t<"
+                           + scalar_type + ">>::load>(load_cb_fn);\n";
+                    ret += "      return " + scalar_type + "\n";
+                    ret += "      {\n";
+                    ret += "          real_cb(reinterpret_cast<real_type_t<" + scalar_type
+                           + ">*>(data), offset * 2, cbdata, sharedMem),\n";
+                    ret += "          real_cb(reinterpret_cast<real_type_t<" + scalar_type
+                           + ">*>(data), offset * 2 + 1, cbdata, sharedMem),\n";
+                    ret += "      };\n";
+                    ret += "  };\n";
+                }
+                else
+                {
+                    ret += "// declare a lambda that calls the default callback twice to\n";
+                    ret += "// load one complex element\n";
+                    ret += "auto load_cb = [](" + scalar_type
+                           + "* data, size_t offset, void* cbdata, void* sharedMem)\n";
+                    ret += "  {\n";
+                    ret += "      auto real_cb = load_cb_default<real_type_t<" + scalar_type
+                           + ">>;\n";
+                    ret += "      return " + scalar_type + "\n";
+                    ret += "      {\n";
+                    ret += "          real_cb(reinterpret_cast<real_type_t<" + scalar_type
+                           + ">*>(data), offset * 2, cbdata, sharedMem),\n";
+                    ret += "          real_cb(reinterpret_cast<real_type_t<" + scalar_type
+                           + ">*>(data), offset * 2 + 1, cbdata, sharedMem),\n";
+                    ret += "      };\n";
+                    ret += "  };\n";
+                }
+            }
+        }
         else
-            return "auto load_cb = get_load_cb<" + scalar_type + ", " + cbtype + ">(load_cb_fn);";
+        {
+            if(jit_symbol)
+            {
+                return "auto load_cb = load_cb_jit_fn;\n";
+            }
+            else
+            {
+                if(funcptr_callback)
+                {
+                    return "auto load_cb = reinterpret_cast<typename "
+                           "callback_type<"
+                           + scalar_type + ">::load>(load_cb_fn);\n";
+                }
+                else
+                {
+                    return "auto load_cb = load_cb_default<" + scalar_type + ">;\n";
+                }
+            }
+        }
+        return ret;
     }
+
+private:
+    // non-null if we're using a JIT callback for loading
+    const char* jit_symbol = nullptr;
+    // are we using a funcptr callback?
+    bool funcptr_callback = false;
+    // whether we are loading complex data through a real-typed callback
+    bool r2c_callback = false;
+    // the data type that the callback loads
+    std::string scalar_type = "scalar_type";
 };
 
 class CallbackStoreDeclaration
 {
 public:
-    CallbackStoreDeclaration(const std::string& scalar_type, const std::string& cbtype)
-        : scalar_type(scalar_type)
-        , cbtype(cbtype){};
-    std::string scalar_type;
-    std::string cbtype;
-    // true if storing complex data through a real-valued callback
-    bool        c2r_callback = false;
+    CallbackStoreDeclaration() = default;
+
+    void set_scalar_type(const char* _scalar_type)
+    {
+        scalar_type = _scalar_type;
+    }
+    // Enable use of JIT or funcptr callbacks as necessary.
+    // c2r_callback means we call a real-valued callback twice to store
+    // a complex element.
+    void set_jit_or_funcptr_callback(const char* _jit_symbol,
+                                     bool        _funcptr_callback,
+                                     bool        _c2r_callback)
+    {
+        // jit symbol and funcptr callback are mutually exclusive
+        if(_jit_symbol && _funcptr_callback)
+            throw std::invalid_argument("jit symbol cannot be combined with funcptr callback");
+
+        jit_symbol       = _jit_symbol;
+        funcptr_callback = _funcptr_callback;
+        c2r_callback     = _c2r_callback;
+    }
+
     std::string render() const
     {
+        std::string ret;
         if(c2r_callback)
-            // declare a lambda that calls the real-valued callback
-            // twice to store one complex value
-            return R"lambda(
-                auto store_cb = [store_cb_fn](scalar_type* data, size_t offset, scalar_type elem, void* cbdata, void* sharedMem)
+        {
+            if(jit_symbol)
+            {
+                ret += "// declare a lambda that calls the real JIT callback twice to\n";
+                ret += "// store one complex element\n";
+                ret += "auto store_cb = [](" + scalar_type + "* data, size_t offset, " + scalar_type
+                       + " elem, void* cbdata, void* sharedMem)\n";
+                ret += "  {\n";
+                ret += "    store_cb_jit_fn(reinterpret_cast<real_type_t<" + scalar_type
+                       + ">*>(data), offset * 2, elem.x, cbdata, sharedMem);\n";
+                ret += "    store_cb_jit_fn(reinterpret_cast<real_type_t<" + scalar_type
+                       + ">*>(data), offset * 2 + 1, elem.y, cbdata, sharedMem);\n";
+                ret += "  };\n";
+            }
+            else
+            {
+                if(funcptr_callback)
                 {
-                    auto real_cb = reinterpret_cast<typename callback_type<real_type_t<scalar_type>>::store>(store_cb_fn);
-                    real_cb(reinterpret_cast<real_type_t<scalar_type>*>(data), offset * 2, elem.x, cbdata, sharedMem);
-                    real_cb(reinterpret_cast<real_type_t<scalar_type>*>(data), offset * 2 + 1, elem.y, cbdata, sharedMem);
-                };
-            )lambda";
+                    ret += "// declare a lambda that calls the real funcptr callback twice to\n";
+                    ret += "// store one complex element\n";
+                    ret += "auto store_cb = [store_cb_fn](" + scalar_type
+                           + "* data, size_t offset, " + scalar_type
+                           + " elem, void* cbdata, void* sharedMem)\n";
+                    ret += "  {\n";
+                    ret += "      auto real_cb = reinterpret_cast<typename "
+                           "callback_type<real_type_t<"
+                           + scalar_type + ">>::store>(store_cb_fn);\n";
+                    ret += "      real_cb(reinterpret_cast<real_type_t<" + scalar_type
+                           + ">*>(data), offset * 2, elem.x, cbdata, sharedMem);\n";
+                    ret += "      real_cb(reinterpret_cast<real_type_t<" + scalar_type
+                           + ">*>(data), offset * 2 + 1, elem.y, cbdata, sharedMem);\n";
+                    ret += "  };\n";
+                }
+                else
+                {
+                    ret += "// declare a lambda that calls the default callback twice to\n";
+                    ret += "// store one complex element\n";
+                    ret += "auto store_cb = [](" + scalar_type + "* data, size_t offset, "
+                           + scalar_type + " elem, void* cbdata, void* sharedMem)\n";
+                    ret += "  {\n";
+                    ret += "      auto real_cb = store_cb_default<real_type_t<" + scalar_type
+                           + ">>;\n";
+                    ret += "      real_cb(reinterpret_cast<real_type_t<" + scalar_type
+                           + ">*>(data), offset * 2, elem.x, cbdata, sharedMem);\n";
+                    ret += "      real_cb(reinterpret_cast<real_type_t<" + scalar_type
+                           + ">*>(data), offset * 2 + 1, elem.y, cbdata, sharedMem);\n";
+                    ret += "  };\n";
+                }
+            }
+        }
         else
-            return "auto store_cb = get_store_cb<" + scalar_type + ", " + cbtype
-                   + ">(store_cb_fn);";
+        {
+            if(jit_symbol)
+            {
+                return "auto store_cb = store_cb_jit_fn;\n";
+            }
+            else
+            {
+                if(funcptr_callback)
+                {
+                    return "auto store_cb = reinterpret_cast<typename "
+                           "callback_type<"
+                           + scalar_type + ">::store>(store_cb_fn);\n";
+                }
+                else
+                {
+                    return "auto store_cb = store_cb_default<" + scalar_type + ">;\n";
+                }
+            }
+        }
+        return ret;
     }
+
+private:
+    // non-null if we're using a JIT callback for storing
+    const char* jit_symbol = nullptr;
+    // are we using a funcptr callback?
+    bool funcptr_callback = false;
+    // whether we are storing complex data through a real-typed callback
+    bool c2r_callback = false;
+    // the data type that the callback stores
+    std::string scalar_type = "scalar_type";
 };
 
 class ReturnExpr
@@ -862,65 +1021,64 @@ public:
     }
 };
 
-class StatementList
-{
-public:
-    std::vector<Statement> statements;
-    StatementList();
-    StatementList(const std::initializer_list<Statement>& il);
-    std::string render() const;
-};
-
 class For
 {
 public:
-    Variable      var;
-    Expression    initial;
-    Expression    condition;
-    Expression    increment;
-    StatementList body;
-    bool          pragma_unroll;
-    For(const Variable&      var,
-        const Expression&    initial,
-        const Expression&    condition,
-        const Expression&    increment,
-        const StatementList& body          = {},
-        bool                 pragma_unroll = false);
+    Variable               var;
+    Expression             initial;
+    Expression             condition;
+    Expression             increment;
+    std::vector<Statement> body;
+    bool                   pragma_unroll;
+    For(const Variable&               var,
+        const Expression&             initial,
+        const Expression&             condition,
+        const Expression&             increment,
+        const std::vector<Statement>& body,
+        bool                          pragma_unroll = false);
+    // Constructor with empty body for C++20 compatibility
+    For(const Variable&   var,
+        const Expression& initial,
+        const Expression& condition,
+        const Expression& increment,
+        bool              pragma_unroll = false);
     std::string render() const;
 };
 
 class While
 {
 public:
-    Expression    condition;
-    StatementList body;
-    While(const Expression& condition, const StatementList& body = {});
+    Expression             condition;
+    std::vector<Statement> body;
+    While(const Expression& condition, const std::vector<Statement>& body);
+    // Constructor with empty body for C++20 compatibility
+    explicit While(const Expression& condition);
     std::string render() const;
 };
 
 class If
 {
 public:
-    Expression    condition;
-    StatementList body;
-    If(const Expression& condition, const StatementList& body);
+    Expression             condition;
+    std::vector<Statement> body;
+    If(const Expression& condition, const std::vector<Statement>& body);
     std::string render() const;
 };
 
 class ElseIf
 {
 public:
-    Expression    condition;
-    StatementList body;
-    ElseIf(const Expression& condition, const StatementList& body);
+    Expression             condition;
+    std::vector<Statement> body;
+    ElseIf(const Expression& condition, const std::vector<Statement>& body);
     std::string render() const;
 };
 
 class Else
 {
 public:
-    StatementList body;
-    explicit Else(const StatementList& body);
+    std::vector<Statement> body;
+    explicit Else(const std::vector<Statement>& body);
     std::string render() const;
 };
 
@@ -1065,6 +1223,88 @@ public:
 
 // end of Statement class declarations
 
+// Define Statement as a class wrapper around std::variant.
+// This is required for C++20 because:
+// 1. std::variant requires all types to be complete at declaration time
+// 2. We need Statement to be forward-declarable so classes can use std::vector<Statement>
+// 3. A class can be forward-declared, unlike a type alias
+using StatementVariant = std::variant<Assign,
+                                      ReturnExpr,
+                                      Call,
+                                      CallbackLoadDeclaration,
+                                      CallbackStoreDeclaration,
+                                      CommentLines,
+                                      Declaration,
+                                      LDSDeclaration,
+                                      For,
+                                      While,
+                                      If,
+                                      ElseIf,
+                                      Else,
+                                      StoreGlobal,
+                                      StoreGlobalPlanar,
+                                      LineBreak,
+                                      Return,
+                                      Break,
+                                      SyncThreads,
+                                      Butterfly,
+                                      IntrinsicStore,
+                                      IntrinsicStorePlanar,
+                                      Printf>;
+
+class Statement
+{
+public:
+    StatementVariant data;
+
+    // No default constructor - std::variant's first type must be default-constructible
+    // and Assign is not. Use LineBreak as a placeholder if needed.
+
+    // Implicit conversion constructor from any variant alternative
+    template <typename T, typename = std::enable_if_t<!std::is_same_v<std::decay_t<T>, Statement>>>
+    Statement(T&& t)
+        : data(std::forward<T>(t))
+    {
+    }
+
+    // Copy and move constructors/assignment
+    Statement(const Statement&) = default;
+    Statement(Statement&&)      = default;
+    Statement& operator=(const Statement&) = default;
+    Statement& operator=(Statement&&) = default;
+
+    // Assignment from any variant alternative
+    template <typename T, typename = std::enable_if_t<!std::is_same_v<std::decay_t<T>, Statement>>>
+    Statement& operator=(T&& t)
+    {
+        data = std::forward<T>(t);
+        return *this;
+    }
+
+    // Render method - visits the variant
+    std::string render() const
+    {
+        return std::visit([](const auto& a) { return a.render(); }, data);
+    }
+};
+
+// StatementList is defined here after Statement
+class StatementList
+{
+public:
+    std::vector<Statement> statements;
+    StatementList();
+    StatementList(const std::initializer_list<Statement>& il);
+    std::string render() const;
+
+    // Implicit conversion to std::vector<Statement> for compatibility with
+    // If, ElseIf, Else, For, While constructors
+    operator std::vector<Statement>() const
+    {
+        return statements;
+    }
+};
+
 static void operator+=(StatementList& stmts, const Statement& s)
 {
     stmts.statements.emplace_back(s);
@@ -1090,6 +1330,33 @@ static void operator+=(StatementList& stmts, StatementList&& s)
     for(auto&& x : s.statements)
     {
         stmts += std::move(x);
+    }
+}
+
+// Overloads for std::vector<Statement> (used by For::body, While::body, etc.)
+static void operator+=(std::vector<Statement>& stmts, const Statement& s)
+{
+    stmts.emplace_back(s);
+}
+
+static void operator+=(std::vector<Statement>& stmts, Statement&& s)
+{
+    stmts.emplace_back(std::move(s));
+}
+
+static void operator+=(std::vector<Statement>& stmts, const StatementList& s)
+{
+    for(const auto& x : s.statements)
+    {
+        stmts.emplace_back(x);
+    }
+}
+
+static void operator+=(std::vector<Statement>& stmts, StatementList&& s)
+{
+    for(auto&& x : s.statements)
+    {
+        stmts.emplace_back(std::move(x));
     }
 }
 
@@ -1203,7 +1470,7 @@ struct BaseVisitor
         StatementList ret;
         for(const auto& stmt : x.statements)
         {
-            StatementList new_stmts = std::visit(*this, stmt);
+            StatementList new_stmts = std::visit(*this, stmt.data);
             for(auto& s : new_stmts.statements)
                 ret.statements.emplace_back(std::move(s));
         }
@@ -1298,9 +1565,22 @@ struct BaseVisitor
     virtual StatementList visit_StatementList(const StatementList& x)
     {
         auto y = StatementList();
-        for(auto s : x.statements)
+        for(const auto& s : x.statements)
         {
-            y += std::visit(*this, s);
+            y += std::visit(*this, s.data);
+        }
+        return y;
+    }
+
+    // Helper to visit a vector of statements
+    virtual std::vector<Statement> visit_statements(const std::vector<Statement>& x)
+    {
+        std::vector<Statement> y;
+        for(const auto& s : x)
+        {
+            StatementList new_stmts = std::visit(*this, s.data);
+            for(auto& stmt : new_stmts.statements)
+                y.emplace_back(std::move(stmt));
         }
         return y;
     }
@@ -1355,34 +1635,34 @@ struct BaseVisitor
         auto initial   = std::visit(*this, x.initial);
         auto condition = std::visit(*this, x.condition);
         auto increment = std::visit(*this, x.increment);
-        auto body      = visit_StatementList(x.body);
+        auto body      = visit_statements(x.body);
         return StatementList{For(var, initial, condition, increment, body, x.pragma_unroll)};
     }
 
     virtual StatementList visit_While(const While& x)
     {
         auto condition = std::visit(*this, x.condition);
-        auto body      = visit_StatementList(x.body);
+        auto body      = visit_statements(x.body);
         return StatementList{While(condition, body)};
     }
 
     virtual StatementList visit_If(const If& x)
     {
         auto condition = std::visit(*this, x.condition);
-        auto body      = visit_StatementList(x.body);
+        auto body      = visit_statements(x.body);
         return StatementList{If(condition, body)};
     }
 
     virtual StatementList visit_ElseIf(const ElseIf& x)
     {
         auto condition = std::visit(*this, x.condition);
-        auto body      = visit_StatementList(x.body);
+        auto body      = visit_statements(x.body);
         return StatementList{ElseIf(condition, body)};
     }
 
     virtual StatementList visit_Else(const Else& x)
     {
-        auto body = visit_StatementList(x.body);
+        auto body = visit_statements(x.body);
         return StatementList{Else(body)};
     }
 
@@ -1433,6 +1713,7 @@ struct BaseVisitor
         y.arguments     = visit_ArgumentList(x.arguments);
         y.templates     = visit_ArgumentList(x.templates);
         y.qualifier     = x.qualifier;
+        y.return_type   = x.return_type;
         y.launch_bounds = x.launch_bounds;
         return y;
     }
@@ -1685,7 +1966,8 @@ static Function make_outofplace(const Function&    f,
                                 const std::string& bufName         = "buf",
                                 bool               rename_function = true)
 {
-    auto visitor = MakeOutOfPlaceVisitor({bufName, "stride", "stride0", "offset"}, rename_function);
+    auto visitor = MakeOutOfPlaceVisitor({bufName, "stride", "stride0", "offset", "offset_pp"},
+                                         rename_function);
     return visitor(f);
 }
 
@@ -1797,40 +2079,51 @@ static Function make_rtc(const Function& f, const std::string& kernel_name)
 // Make callbacks compatible with real-complex even-length optimization
 struct MakeCallbackRealComplexVisitor : public BaseVisitor
 {
-    MakeCallbackRealComplexVisitor(CallbackType cbtype)
-        : cbtype(cbtype)
+    MakeCallbackRealComplexVisitor(const CallbackType cbtype,
+                                   const char*        load_cb_jit_symbol,
+                                   const char*        store_cb_jit_symbol)
+        : load_cb_jit_symbol(load_cb_jit_symbol)
+        , store_cb_jit_symbol(store_cb_jit_symbol)
     {
+        if(!load_cb_jit_symbol && !store_cb_jit_symbol && cbtype != CallbackType::NONE)
+            funcptr_callback = true;
+        r2c_callback = cbtype == CallbackType::USER_LOAD_STORE_R2C;
+        c2r_callback = cbtype == CallbackType::USER_LOAD_STORE_C2R;
     }
 
     StatementList visit_CallbackLoadDeclaration(const CallbackLoadDeclaration& x) override
     {
-        if(cbtype == CallbackType::USER_LOAD_STORE_R2C)
-        {
-            CallbackLoadDeclaration y{x};
-            y.r2c_callback = true;
-            return {y};
-        }
-        return {x};
+        CallbackLoadDeclaration y{x};
+        y.set_jit_or_funcptr_callback(load_cb_jit_symbol, funcptr_callback, r2c_callback);
+        return {y};
     }
 
     StatementList visit_CallbackStoreDeclaration(const CallbackStoreDeclaration& x) override
     {
-        if(cbtype == CallbackType::USER_LOAD_STORE_C2R)
-        {
-            CallbackStoreDeclaration y{x};
-            y.c2r_callback = true;
-            return {y};
-        }
-        return {x};
+        CallbackStoreDeclaration y{x};
+        y.set_jit_or_funcptr_callback(store_cb_jit_symbol, funcptr_callback, c2r_callback);
+        return {y};
     }
 
-    CallbackType cbtype;
+    bool funcptr_callback = false;
+    // Is the load callback (JIT or funcptr) reading real elements,
+    // while the kernel uses complex elements?
+    bool r2c_callback = false;
+    // Is the store callback (JIT or funcptr) writing real elements,
+    // while the kernel uses complex elements?
+    bool        c2r_callback        = false;
+    const char* load_cb_jit_symbol  = nullptr;
+    const char* store_cb_jit_symbol = nullptr;
 };
 
-static Function make_callback_realcomplex(const Function& f, CallbackType cbtype)
+static Function make_callback_realcomplex(const Function&                f,
+                                          CallbackType                   cbtype,
+                                          const std::optional<LoadOps>&  loadOps,
+                                          const std::optional<StoreOps>& storeOps)
 {
-    if(cbtype == CallbackType::NONE || cbtype == CallbackType::USER_LOAD_STORE)
-        return f;
-    auto visitor = MakeCallbackRealComplexVisitor(cbtype);
+    auto visitor = MakeCallbackRealComplexVisitor(
+        cbtype,
+        (loadOps && loadOps->has_spirv()) ? loadOps->spirv_cb.symbol_name.c_str() : nullptr,
+        (storeOps && storeOps->has_spirv()) ? storeOps->spirv_cb.symbol_name.c_str() : nullptr);
     return visitor(f);
 }

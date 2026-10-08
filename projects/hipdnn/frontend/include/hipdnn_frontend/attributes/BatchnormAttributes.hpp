@@ -1,21 +1,75 @@
 // Copyright © Advanced Micro Devices, Inc., or its affiliates.
-// SPDX-License-Identifier:  MIT
+// SPDX-License-Identifier: MIT
+
+/**
+ * @file BatchnormAttributes.hpp
+ * @brief Attributes for batch normalization forward training operation
+ *
+ * This file defines the BatchnormAttributes class used to configure
+ * batch normalization operations during training, including computing
+ * mean and variance statistics.
+ */
+
 #pragma once
 
 #include "Attributes.hpp"
 #include "TensorAttributes.hpp"
-#include <hipdnn_sdk/data_objects/batchnorm_attributes_generated.h>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 
-namespace hipdnn_frontend
+namespace hipdnn_frontend::graph
 {
-namespace graph
-{
+
+/**
+ * @class BatchnormAttributes
+ * @brief Configuration attributes for batch normalization forward training
+ *
+ * BatchnormAttributes configures a batch normalization operation for training.
+ * This operation normalizes the input tensor across the batch dimension and
+ * computes running statistics for inference.
+ *
+ * **Tensor Shapes:**
+ * - **X** (input): `(N, C, H, W)` or `(N, C, D, H, W)` — batch, channels, spatial dims
+ * - **Scale, Bias**: `(1, C, 1, 1)` or `(1, C, 1, 1, 1)` — per-channel parameters
+ * - **Y** (output): Same shape as X
+ * - **Mean, Inv_variance**: `(1, C, 1, 1)` or `(1, C, 1, 1, 1)` — per-channel statistics
+ *
+ * **Required inputs:**
+ * - X: Input tensor to normalize
+ * - Scale: Per-channel scale (gamma) tensor
+ * - Bias: Per-channel bias (beta) tensor
+ *
+ * **Optional inputs (for running statistics):**
+ * - prev_running_mean: Previous running mean (for exponential moving average)
+ * - prev_running_variance: Previous running variance
+ * - momentum: Momentum for running statistics update
+ *
+ * **Outputs:**
+ * - Y: Normalized output tensor
+ * - Mean: Computed batch mean
+ * - Inv_variance: Computed inverse variance (1/sqrt(var + epsilon))
+ * - next_running_mean: Updated running mean (optional)
+ * - next_running_variance: Updated running variance (optional)
+ *
+ * @code{.cpp}
+ * BatchnormAttributes attr;
+ * attr.set_x(inputTensor)
+ *     .set_scale(scaleTensor)
+ *     .set_bias(biasTensor)
+ *     .set_epsilon(epsilonTensor);
+ *
+ * auto [y, mean, invVar, nextMean, nextVar] = graph.batchnorm(x, scale, bias, attr);
+ * @endcode
+ *
+ * @see BatchnormInferenceAttributes for inference-only batch normalization
+ * @see BatchnormBackwardAttributes for backward pass
+ */
 class BatchnormAttributes : public Attributes<BatchnormAttributes>
 {
 public:
+    BatchnormAttributes() = default;
+
     enum class InputNames
     {
         X = 0,
@@ -261,92 +315,58 @@ public:
             .set_momentum(std::move(momentum));
     }
 
-    flatbuffers::Offset<hipdnn_sdk::data_objects::BatchnormAttributes>
-        pack_attributes(flatbuffers::FlatBufferBuilder& builder) const // NOLINT
+    /**
+     * @brief Custom hook for matching peer_stats logically
+     */
+    bool logicallyEqualsImpl(const BatchnormAttributes& other) const
     {
-        auto peerStatsVector = std::vector<int64_t>{};
-        for(const auto& peerStat : peer_stats)
+        // Core maps (inputs/outputs) are already structurally matched by Attributes::logicallyEquals
+        if(peer_stats.size() != other.peer_stats.size())
         {
-            if(peerStat)
+            return false;
+        }
+        for(size_t i = 0; i < peer_stats.size(); ++i)
+        {
+            if(!peer_stats[i] && !other.peer_stats[i])
             {
-                peerStatsVector.emplace_back(peerStat->get_uid());
+                continue;
+            }
+            if(!peer_stats[i] || !other.peer_stats[i]
+               || !peer_stats[i]->logicallyEquals(*other.peer_stats[i]))
+            {
+                return false;
             }
         }
 
-        auto prevRunningMean = get_prev_running_mean();
-        auto prevRunningVariance = get_prev_running_variance();
-        auto momentum = get_momentum();
-        auto mean = get_mean();
-        auto invVariance = get_inv_variance();
-        auto nextRunningMean = get_next_running_mean();
-        auto nextRunningVariance = get_next_running_variance();
-
-        return hipdnn_sdk::data_objects::CreateBatchnormAttributesDirect(
-            builder,
-            get_x()->get_uid(),
-            get_scale()->get_uid(),
-            get_bias()->get_uid(),
-            get_epsilon()->get_uid(),
-            &peerStatsVector,
-            prevRunningMean ? flatbuffers::Optional<int64_t>(prevRunningMean->get_uid())
-                            : flatbuffers::nullopt,
-            prevRunningVariance ? flatbuffers::Optional<int64_t>(prevRunningVariance->get_uid())
-                                : flatbuffers::nullopt,
-            momentum ? flatbuffers::Optional<int64_t>(momentum->get_uid()) : flatbuffers::nullopt,
-            get_y()->get_uid(),
-            mean ? flatbuffers::Optional<int64_t>(mean->get_uid()) : flatbuffers::nullopt,
-            invVariance ? flatbuffers::Optional<int64_t>(invVariance->get_uid())
-                        : flatbuffers::nullopt,
-            nextRunningMean ? flatbuffers::Optional<int64_t>(nextRunningMean->get_uid())
-                            : flatbuffers::nullopt,
-            nextRunningVariance ? flatbuffers::Optional<int64_t>(nextRunningVariance->get_uid())
-                                : flatbuffers::nullopt);
+        return true;
     }
 
-private:
-    std::shared_ptr<TensorAttributes> getInput(InputNames name) const
+    /**
+     * @brief Custom hook for matching peer_stats strictly
+     */
+    bool strictEqualsImpl(const BatchnormAttributes& other) const
     {
-        auto it = inputs.find(name);
-        if(it != inputs.end())
+        if(!logicallyEqualsImpl(other))
         {
-            return it->second;
+            return false;
         }
-        return nullptr;
-    }
 
-    std::shared_ptr<TensorAttributes> getOutput(OutputNames name) const
-    {
-        auto it = outputs.find(name);
-        if(it != outputs.end())
+        for(size_t i = 0; i < peer_stats.size(); ++i)
         {
-            return it->second;
+            if(!peer_stats[i])
+            {
+                continue; // Both are null (proven by logical checking step)
+            }
+
+            if(!(*peer_stats[i] == *other.peer_stats[i]))
+            {
+                return false;
+            }
         }
-        return nullptr;
-    }
 
-    BatchnormAttributes& setInput(InputNames name, const std::shared_ptr<TensorAttributes>& value)
-    {
-        inputs[name] = value;
-        return *this;
-    }
-    BatchnormAttributes& setInput(InputNames name, std::shared_ptr<TensorAttributes>&& value)
-    {
-        inputs[name] = std::move(value);
-        return *this;
-    }
-
-    BatchnormAttributes& setOutput(OutputNames name, const std::shared_ptr<TensorAttributes>& value)
-    {
-        outputs[name] = value;
-        return *this;
-    }
-    BatchnormAttributes& setOutput(OutputNames name, std::shared_ptr<TensorAttributes>&& value)
-    {
-        outputs[name] = std::move(value);
-        return *this;
+        return true;
     }
 };
 
 typedef BatchnormAttributes Batchnorm_attributes;
-}
-}
+} // namespace hipdnn_frontend::graph

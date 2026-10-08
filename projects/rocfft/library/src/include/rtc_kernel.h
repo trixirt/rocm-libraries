@@ -1,4 +1,4 @@
-// Copyright (C) 2021 - 2023 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2021 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -21,15 +21,19 @@
 #ifndef ROCFFT_RTC_H
 #define ROCFFT_RTC_H
 
+#include "load_store_ops.h"
 #include "rocfft/rocfft.h"
 #include <hip/hip_runtime_api.h>
 
 #include <algorithm>
 #include <future>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "../../../shared/hip_object_wrapper.h"
 #include "../../../shared/rocfft_complex.h"
 #include "../device/kernels/callback.h"
 #include "rtc_generator.h"
@@ -44,6 +48,33 @@ class RTCKernelArgs
 {
 public:
     RTCKernelArgs() = default;
+    explicit RTCKernelArgs(KIntType itype)
+        : itype(itype)
+    {
+    }
+    // append a value for an argument declared as "integer_type"
+    void append_kint(size_t value, const std::optional<KIntType>& forced_itype = std::nullopt)
+    {
+        const auto arg_type = forced_itype.has_value() ? forced_itype.value() : itype;
+
+        switch(arg_type)
+        {
+        case KIntType::U32:
+        {
+            if(value > std::numeric_limits<unsigned int>::max())
+                throw std::runtime_error("index value overflows 32-bit kernel kint_type");
+            unsigned int v = static_cast<unsigned int>(value);
+            append(&v, sizeof(v));
+            break;
+        }
+        case KIntType::U64:
+        {
+            unsigned long long v = value;
+            append(&v, sizeof(v));
+            break;
+        }
+        }
+    }
     void append_ptr(const void* ptr)
     {
         append(&ptr, sizeof(void*));
@@ -55,6 +86,10 @@ public:
     void append_unsigned_int(unsigned int i)
     {
         append(&i, sizeof(unsigned int));
+    }
+    void append_unsigned_long_long(unsigned long long i)
+    {
+        append(&i, sizeof(unsigned long long));
     }
     void append_int(int i)
     {
@@ -102,6 +137,7 @@ private:
     }
 
     std::vector<char> buf;
+    KIntType          itype = KIntType::U32;
 };
 
 // Base class for a runtime compiled kernel.  Subclassed for
@@ -117,20 +153,32 @@ struct RTCKernel
         runtime_compile(const LeafNode&    node,
                         const std::string& gpu_arch,
                         std::string&       kernel_name,
-                        bool               enable_callbacks = false);
+                        CallbackType       cbtype = CallbackType::NONE);
 
     // take already-compiled code object and prepare to launch the
-    // named kernel
-    RTCKernel(const std::string&       kernel_name,
-              const std::vector<char>& code,
-              dim3                     gridDim  = {},
-              dim3                     blockDim = {});
+    // named kernel.  itype is the width the kernel was generated with,
+    // so that get_launch_args can pack "integer_type" arguments to match.
+    RTCKernel(const std::string&                       kernel_name,
+              KIntType                                 itype,
+              std::shared_future<hipModule_wrapper_t>& module,
+              dim3                                     gridDim  = {},
+              dim3                                     blockDim = {});
 
     virtual ~RTCKernel()
     {
         kernel = nullptr;
-        (void)hipModuleUnload(module);
-        module = nullptr;
+
+#ifndef ROCFFT_DEBUG_GENERATE_KERNEL_HARNESS
+        std::lock_guard<std::mutex> lock(active_modules_mutex);
+        // decrement refcount and remove the module from the map if it's no longer used
+        auto it = active_modules.find(rtc_module_key{kernel_name, deviceId});
+        if(it != active_modules.end())
+        {
+            it->second.refcount--;
+            if(it->second.refcount == 0)
+                active_modules.erase(it);
+        }
+#endif
     }
 
     // disallow copies, since we expect this to be managed by smart ptr
@@ -158,9 +206,10 @@ struct RTCKernel
     virtual RTCKernelArgs get_launch_args(DeviceCallIn& data) = 0;
 #endif
 
-    // function to construct the correct RTCKernel object, given a kernel name and its compiled code
+    // function to construct the correct RTCKernel object, given a
+    // kernel name and its code object module
     using rtckernel_construct_t = std::function<std::unique_ptr<RTCKernel>(
-        const std::string&, const std::vector<char>&, dim3, dim3)>;
+        const std::string&, std::shared_future<hipModule_wrapper_t>&, dim3, dim3)>;
 
     // grid parameters for this kernel.  may be set by runtime
     // compilation, if compilation of this kernel type knows how to.
@@ -169,9 +218,28 @@ struct RTCKernel
     dim3 gridDim;
     dim3 blockDim;
 
-    std::string kernel_name;
+    const std::string kernel_name;
+    const KIntType    itype;
+    const int         deviceId = hipInvalidDeviceId;
 
 protected:
+    // Argument buffer that packs arguments declared as integer_type" at
+    // the width this kernel was generated with.  get_launch_args
+    // implementations must build their arguments through this - a
+    // default-constructed RTCKernelArgs always packs 32-bit, which
+    // silently misaligns every argument of a 64-bit kernel.
+    RTCKernelArgs make_launch_args() const
+    {
+        return RTCKernelArgs(itype);
+    }
+
+    // Hang on to the module that was used to construct this kernel, to
+    // ensure that the module lives long enough.  Normally we'd expect
+    // the module to be kept alive by the active_modules map below, but
+    // it's possible to have standalone RTCKernels too.
+    const std::shared_future<hipModule_wrapper_t> module;
+    hipFunction_t                                 kernel = nullptr;
+
 #ifndef ROCFFT_DEBUG_GENERATE_KERNEL_HARNESS
     struct RTCGenerator
     {
@@ -194,10 +262,52 @@ protected:
         dim3 gridDim;
         dim3 blockDim;
     };
+
+    // runtime compile a kernel, given a generator struct that
+    // indicates how to generate code for it
+    static std::shared_future<std::unique_ptr<RTCKernel>>
+        runtime_compile(const RTCGenerator&            generator,
+                        const std::string&             gpu_arch,
+                        std::string&                   kernel_name,
+                        const std::optional<LoadOps>&  loadOps,
+                        const std::optional<StoreOps>& storeOps);
+
+    // Keep track of modules that have been requested, so that if two
+    // identical kernel requests come at the same time, we only
+    // create one module.  Modules are per-device so that needs to be
+    // part of the key.
+    struct rtc_module_key
+    {
+        std::string kernel_name;
+        int         deviceId = 0;
+        bool        operator<(const rtc_module_key& other) const
+        {
+            if(kernel_name < other.kernel_name)
+                return true;
+            if(kernel_name > other.kernel_name)
+                return false;
+            return deviceId < other.deviceId;
+        };
+    };
+
+    // Cache of actively used HIP modules.  As kernels are requested
+    // for plans in RTCKernel::runtime_compile, a std::shared_future
+    // for the module is added here.  Subsequent requests for the same
+    // kernel will increase the refcount of the module and avoid
+    // creating a new duplicate module.
+    //
+    // As RTCKernel objects are destroyed, the refcounts are decreased,
+    // and the modules are freed when nothing references them anymore.
+    struct rtc_module_t
+    {
+        std::shared_future<hipModule_wrapper_t> module;
+        size_t                                  refcount = 0;
+    };
+    static std::map<rtc_module_key, rtc_module_t> active_modules;
+    static std::mutex                             active_modules_mutex;
 #endif
 
-    hipModule_t   module = nullptr;
-    hipFunction_t kernel = nullptr;
+    static int get_current_hip_device();
 };
 
 #ifndef ROCFFT_DEBUG_GENERATE_KERNEL_HARNESS
@@ -220,6 +330,45 @@ static const char* rtc_array_type_name(rocfft_array_type type)
     default:
         return "_UN";
     }
+}
+
+static const char* rtc_kint_name(KIntType itype)
+{
+    switch(itype)
+    {
+    case KIntType::U32:
+        return "_i32";
+    case KIntType::U64:
+        return "_i64";
+    }
+
+    throw std::runtime_error("Invalid integer type");
+}
+
+static const char* rtc_kint_type(KIntType itype)
+{
+    switch(itype)
+    {
+    case KIntType::U32:
+        return "unsigned int";
+    case KIntType::U64:
+        return "unsigned long long";
+    }
+
+    throw std::runtime_error("Invalid integer type");
+}
+
+static const char* rtc_kint_type_decl(KIntType itype)
+{
+    switch(itype)
+    {
+    case KIntType::U32:
+        return "typedef unsigned int integer_type;\n";
+    case KIntType::U64:
+        return "typedef unsigned long long integer_type;\n";
+    }
+
+    throw std::runtime_error("Invalid integer type");
 }
 
 static const char* rtc_precision_name(rocfft_precision precision)
@@ -263,23 +412,6 @@ static const char* rtc_cbtype_name(CallbackType cbtype)
         return "_CBr2c";
     case CallbackType::USER_LOAD_STORE_C2R:
         return "_CBc2r";
-    }
-}
-
-// realDataAsComplex is true if we're treating real data as complex
-// (in an even-length real-complex FFT)
-static const std::string rtc_const_cbtype_decl(CallbackType cbtype)
-{
-    switch(cbtype)
-    {
-    case CallbackType::NONE:
-        return "static const CallbackType cbtype = CallbackType::NONE;\n";
-    case CallbackType::USER_LOAD_STORE:
-        return "static const CallbackType cbtype = CallbackType::USER_LOAD_STORE;\n";
-    case CallbackType::USER_LOAD_STORE_R2C:
-        return "static const CallbackType cbtype = CallbackType::USER_LOAD_STORE_R2C;\n";
-    case CallbackType::USER_LOAD_STORE_C2R:
-        return "static const CallbackType cbtype = CallbackType::USER_LOAD_STORE_C2R;\n";
     }
 }
 #endif

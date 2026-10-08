@@ -47,11 +47,14 @@ def run_tuning(input_file, args, tuning_info):
 
 def gpu_setup(device):
     os.environ["HIP_FORCE_DEV_KERNARG"] = "1"
-    subprocess.run(["rocm-smi", "--setperfdeterminism", "1900", "-d", str(device)], check=True)
+    # amd-smi set requires elevated privileges; enable performance determinism
+    # with a GFXCLK soft-max of 1900 MHz to stabilize the GPU frequency.
+    subprocess.run(["sudo", "-n", "amd-smi", "set", "-g", str(device), "--perf-determinism", "1900"], check=True)
 
 def gpu_reset(device):
     del os.environ["HIP_FORCE_DEV_KERNARG"]
-    subprocess.run(["rocm-smi", "-r", "-d", str(device)], check=True)
+    # Disable performance determinism (inverse of gpu_setup).
+    subprocess.run(["sudo", "-n", "amd-smi", "reset", "-g", str(device), "--perf-determinism"], check=True)
 
 def main():
     parser = argparse.ArgumentParser(description="Execute Gemm Tuning")
@@ -88,7 +91,19 @@ def main():
     if args.stablize_gpu:
         gpu_reset(args.gpu_id)
 
-    export_csv(unique_log_name, tuning_info, args)
+    success_count, total_count = export_csv(unique_log_name, tuning_info, args)
+
+    # Print summary report
+    failed_count = total_count - success_count
+    print("\n" + "="*60)
+    print("GEMM TUNING SUMMARY")
+    print("="*60)
+    print(f"Total GEMMs processed: {total_count}")
+    print(f"  - Successful: {success_count}")
+    print(f"  - Failed: {failed_count}")
+    print("="*60)
+    print(f"Results saved to: {args.output_path}/tuning_result.csv")
+    print()
 
 
 if __name__ == "__main__":

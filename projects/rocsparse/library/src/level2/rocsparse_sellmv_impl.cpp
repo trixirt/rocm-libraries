@@ -258,7 +258,7 @@ namespace rocsparse
             {
                 RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(
                     (rocsparse::sellmvn_large_slice_kernel<256>),
-                    dim3(nslices),
+                    dim3(blocks_x, blocks_y, 1),
                     dim3(256),
                     0,
                     stream,
@@ -310,7 +310,7 @@ namespace rocsparse
             {
                 RETURN_IF_HIPLAUNCHKERNELGGL_ERROR(
                     (rocsparse::sellmvt_large_slice_kernel<256>),
-                    dim3(nslices),
+                    dim3(blocks_x, blocks_y, 1),
                     dim3(256),
                     0,
                     stream,
@@ -540,9 +540,18 @@ INSTANTIATE_MIXED(float, int64_t, int64_t, int8_t, int8_t, float);
 INSTANTIATE_MIXED(float, int32_t, int32_t, _Float16, _Float16, float);
 INSTANTIATE_MIXED(float, int64_t, int32_t, _Float16, _Float16, float);
 INSTANTIATE_MIXED(float, int64_t, int64_t, _Float16, _Float16, float);
+INSTANTIATE_MIXED(float, int32_t, int32_t, _Float16, _Float16, _Float16);
+INSTANTIATE_MIXED(float, int64_t, int32_t, _Float16, _Float16, _Float16);
+INSTANTIATE_MIXED(float, int64_t, int64_t, _Float16, _Float16, _Float16);
 INSTANTIATE_MIXED(float, int32_t, int32_t, rocsparse_bfloat16, rocsparse_bfloat16, float);
 INSTANTIATE_MIXED(float, int64_t, int32_t, rocsparse_bfloat16, rocsparse_bfloat16, float);
 INSTANTIATE_MIXED(float, int64_t, int64_t, rocsparse_bfloat16, rocsparse_bfloat16, float);
+INSTANTIATE_MIXED(
+    float, int32_t, int32_t, rocsparse_bfloat16, rocsparse_bfloat16, rocsparse_bfloat16);
+INSTANTIATE_MIXED(
+    float, int64_t, int32_t, rocsparse_bfloat16, rocsparse_bfloat16, rocsparse_bfloat16);
+INSTANTIATE_MIXED(
+    float, int64_t, int64_t, rocsparse_bfloat16, rocsparse_bfloat16, rocsparse_bfloat16);
 INSTANTIATE_MIXED(rocsparse_float_complex,
                   int32_t,
                   int32_t,

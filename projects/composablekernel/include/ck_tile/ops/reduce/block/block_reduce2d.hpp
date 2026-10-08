@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2018-2024, Advanced Micro Devices, Inc. All rights reserved.
 
 #pragma once
 
@@ -140,33 +140,9 @@ struct BlockReduce2d
                                            ReducePacksPerXDim{});
     }
 
-#if 0
-        constexpr auto I0 = number<0>{};
-        constexpr auto I1 = number<1>{};
-        constexpr auto spans = XDistributedTensor_::get_distributed_spans();
-
-        // FIXME: hard coded to reduce 2nd axis
-        sweep_tile_span(spans[I0], [&](auto dstr_idx_i0) {
-            constexpr auto y_dstr_idx = make_tuple(dstr_idx_i0);
-
-            auto y = y_tensor[y_dstr_idx];
-
-            sweep_tile_span(spans[I1], [&](auto dstr_idx_i1) {
-                constexpr auto in_dstr_idx = make_tuple(dstr_idx_i0, dstr_idx_i1);
-                const auto x = ck_tile::type_convert<ComputeDataType>(x_tensor[in_dstr_idx]);
-
-                y = reduce_func(y, x);
-            });
-
-            y_tensor(y_dstr_idx) = y;
-        });
-#endif
-
     template <typename XDistributedTensor_>
     CK_TILE_DEVICE static auto MakeYBlockTile()
     {
-        static_assert(std::is_same_v<XDataType, typename XDistributedTensor_::DataType>, "wrong!");
-
         // FIXME: hard coded to reduce 2nd axis
         constexpr auto reduce_dims = sequence<1>{};
 
@@ -201,7 +177,7 @@ struct BlockReduce2d
     }
 
     // uniform_sequence_gen_t<NSize, Value> generates sequence of NSize elements filled with Value
-    // e.g., uniform_sequence_gen_t<2, 1> → {1, 1} and uniform_sequence_gen_t<3, 4> → {4, 4, 4}
+    // e.g., uniform_sequence_gen_t<2, 1> -> {1, 1} and uniform_sequence_gen_t<3, 4> -> {4, 4, 4}
     template <typename XDistributedTensor_,
               typename ReduceFunc,
               typename ReducePacksPerXDim = uniform_sequence_gen_t<2, 1>>
@@ -241,10 +217,6 @@ struct BlockReduce2dSync
         constexpr index_t NDimR = Dstr::get_num_of_dimension_r();
 
         constexpr index_t idim_p_lane = NDimP - 1;
-
-        // const auto ps_idx = make_array<index_t>(get_warp_id(), get_lane_id());
-        // const auto rs_idx =
-        //     y_tensor.get_tile_distribution().calculate_rs_index_from_ps_index(ps_idx);
 
         constexpr index_t thread_buf_size = YDistributedTensor_::get_thread_buffer_size();
 
@@ -425,7 +397,7 @@ struct BlockReduce2dCrossWarpSync
 
         if constexpr(num_reduce_warps == 1)
             return;
-
+        block_sync_lds();
         // Each warp's lane 0 writes its partial results to shared memory
         const index_t smem_offset = warp_id;
         if(lane_id == 0)
@@ -633,17 +605,17 @@ struct BlockReduce2dLinearCrossWarpSync
                                             IndexDataType> all_indices;
 
         // Load data from shared memory
-        static_for<0, thread_buf_size, 1>{}([&](auto i_0) {
-            static_for<0, num_reduce_warps, 1>{}([&](auto i_1) {
-                all_scratch[i_0 * num_reduce_warps + i_1] =
-                    smem_ptr[i_0 * num_warps + local_smem_os + i_1];
+        static_ford<sequence<thread_buf_size, num_reduce_warps>>{}([&](auto ii) {
+            constexpr auto i_0 = number<ii[number<0>{}]>{};
+            constexpr auto i_1 = number<ii[number<1>{}]>{};
+            all_scratch[i_0 * num_reduce_warps + i_1] =
+                smem_ptr[i_0 * num_warps + local_smem_os + i_1];
 
-                if constexpr(kProcessIndex)
-                {
-                    all_indices[i_0 * num_reduce_warps + i_1] =
-                        smem_indices[i_0 * num_warps + local_smem_os + i_1];
-                }
-            });
+            if constexpr(kProcessIndex)
+            {
+                all_indices[i_0 * num_reduce_warps + i_1] =
+                    smem_indices[i_0 * num_warps + local_smem_os + i_1];
+            }
         });
         block_sync_lds(); // TODO: we don't need sync here
 

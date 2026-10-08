@@ -81,14 +81,13 @@ namespace rocsparse
         __syncthreads();
 
         for(int32_t level = 4; level > 0; level /= 2)
+        {
             if(tidy < level && tidy + level < THREADS_PER_ROW)
             {
-                if(tidy < level && tidy + level < THREADS_PER_ROW)
-                {
-                    shared[idx] = shared[idx] + shared[idx + sell_slice_size * level];
-                }
-                __syncthreads();
+                shared[idx] = shared[idx] + shared[idx + sell_slice_size * level];
             }
+            __syncthreads();
+        }
 
         if(row < m && tidy == 0)
         {
@@ -126,7 +125,7 @@ namespace rocsparse
                                                          rocsparse_index_base idx_base)
     {
         const uint32_t tid     = hipThreadIdx_x;
-        const uint32_t sliceid = hipBlockIdx_x;
+        const uint32_t sliceid = hipGridDim_x * hipBlockIdx_y + hipBlockIdx_x;
 
         const J iter = (sell_slice_size - 1) / BLOCKSIZE + 1;
 
@@ -216,7 +215,7 @@ namespace rocsparse
                     val = rocsparse::conj(val);
                 }
 
-                rocsparse::atomic_add(&y[col], static_cast<T>(val) * row_val);
+                rocsparse::atomic_add(y, col, n, static_cast<T>(val) * row_val);
             }
         }
     }
@@ -244,7 +243,7 @@ namespace rocsparse
                                                          rocsparse_index_base idx_base)
     {
         const uint32_t tid     = hipThreadIdx_x;
-        const uint32_t sliceid = hipBlockIdx_x;
+        const uint32_t sliceid = hipGridDim_x * hipBlockIdx_y + hipBlockIdx_x;
 
         const J iter = (sell_slice_size - 1) / BLOCKSIZE + 1;
 
@@ -274,7 +273,7 @@ namespace rocsparse
                         val = rocsparse::conj(val);
                     }
 
-                    rocsparse::atomic_add(&y[col], static_cast<T>(val) * row_val);
+                    rocsparse::atomic_add(y, col, n, static_cast<T>(val) * row_val);
                 }
             }
         }

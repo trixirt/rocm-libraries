@@ -1,38 +1,12 @@
-/*******************************************************************************
- *
- * MIT License
- *
- * Copyright (c) 2017 Advanced Micro Devices, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- *******************************************************************************/
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// SPDX-License-Identifier:  MIT
+
 #include <miopen/db.hpp>
 #include <miopen/db_record.hpp>
 #include <miopen/errors.hpp>
 #include <miopen/lock_file.hpp>
 #include <miopen/logger.hpp>
 #include <miopen/filesystem.hpp>
-
-#include <boost/date_time/posix_time/posix_time_types.hpp>
-#include <boost/none.hpp>
-#include <boost/optional.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -41,6 +15,7 @@
 #include <fstream>
 #include <ios>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <vector>
@@ -49,6 +24,7 @@ namespace miopen {
 
 PlainTextDb::PlainTextDb(DbKinds db_kind_, const fs::path& filename_, bool is_system)
     : db_kind(db_kind_),
+      disable_file_io(IsUserDbDisabled()),
       filename(filename_),
       lock_file(LockFile::Get(LockFilePath(filename_))),
       warning_if_unreadable(is_system)
@@ -59,7 +35,7 @@ PlainTextDb::PlainTextDb(DbKinds db_kind_, const fs::path& filename_, bool is_sy
                      "class instead.");
     }
 
-    if(!DisableUserDbFileIO)
+    if(!disable_file_io)
     {
         fs::path directory = filename.has_parent_path() ? filename.parent_path() : "";
         if(!fs::exists(directory))
@@ -67,7 +43,7 @@ PlainTextDb::PlainTextDb(DbKinds db_kind_, const fs::path& filename_, bool is_sy
             if(!fs::create_directories(directory))
                 MIOPEN_LOG_W("Unable to create a directory: " << directory);
             else
-                fs::permissions(directory, FS_ENUM_PERMS_ALL);
+                fs::permissions(directory, miopen::fs::perms::all);
         }
     }
 }
@@ -84,9 +60,9 @@ static std::chrono::seconds GetLockTimeout() { return std::chrono::seconds{60}; 
 using exclusive_lock = std::unique_lock<LockFile>;
 using shared_lock    = std::shared_lock<LockFile>;
 
-boost::optional<DbRecord> PlainTextDb::FindRecord(const std::string& key)
+std::optional<DbRecord> PlainTextDb::FindRecord(const std::string& key)
 {
-    if(DisableUserDbFileIO)
+    if(disable_file_io)
         return {};
     const auto lock = shared_lock(lock_file, GetLockTimeout());
     MIOPEN_VALIDATE_LOCK(lock);
@@ -95,7 +71,7 @@ boost::optional<DbRecord> PlainTextDb::FindRecord(const std::string& key)
 
 bool PlainTextDb::StoreRecord(const DbRecord& record)
 {
-    if(DisableUserDbFileIO)
+    if(disable_file_io)
         return true;
     const auto lock = exclusive_lock(lock_file, GetLockTimeout());
     MIOPEN_VALIDATE_LOCK(lock);
@@ -104,7 +80,7 @@ bool PlainTextDb::StoreRecord(const DbRecord& record)
 
 bool PlainTextDb::UpdateRecord(DbRecord& record)
 {
-    if(DisableUserDbFileIO)
+    if(disable_file_io)
         return true;
     const auto lock = exclusive_lock(lock_file, GetLockTimeout());
     MIOPEN_VALIDATE_LOCK(lock);
@@ -113,7 +89,7 @@ bool PlainTextDb::UpdateRecord(DbRecord& record)
 
 bool PlainTextDb::RemoveRecord(const std::string& key)
 {
-    if(DisableUserDbFileIO)
+    if(disable_file_io)
         return true;
     const auto lock = exclusive_lock(lock_file, GetLockTimeout());
     MIOPEN_VALIDATE_LOCK(lock);
@@ -122,7 +98,7 @@ bool PlainTextDb::RemoveRecord(const std::string& key)
 
 bool PlainTextDb::Remove(const std::string& key, const std::string& id)
 {
-    if(DisableUserDbFileIO)
+    if(disable_file_io)
         return true;
     const auto lock = exclusive_lock(lock_file, GetLockTimeout());
     MIOPEN_VALIDATE_LOCK(lock);
@@ -135,8 +111,7 @@ bool PlainTextDb::Remove(const std::string& key, const std::string& id)
     return StoreRecordUnsafe(*record);
 }
 
-boost::optional<DbRecord> PlainTextDb::FindRecordUnsafe(const std::string& key,
-                                                        RecordPositions* pos)
+std::optional<DbRecord> PlainTextDb::FindRecordUnsafe(const std::string& key, RecordPositions* pos)
 {
     if(pos != nullptr)
     {
@@ -154,7 +129,7 @@ boost::optional<DbRecord> PlainTextDb::FindRecordUnsafe(const std::string& key,
                                    ? LoggingLevel::Warning
                                    : LoggingLevel::Info2;
         MIOPEN_LOG(log_level, "File is unreadable: " << filename);
-        return boost::none;
+        return {};
     }
 
     int n_line = 0;
@@ -212,7 +187,7 @@ boost::optional<DbRecord> PlainTextDb::FindRecordUnsafe(const std::string& key,
         return record;
     }
     // Record was not found
-    return boost::none;
+    return {};
 }
 
 static void Copy(std::istream& from, std::ostream& to, std::streamoff count)
@@ -251,7 +226,7 @@ bool PlainTextDb::FlushUnsafe(const DbRecord& record, const RecordPositions* pos
             record.WriteContents(file);
         }
 
-        fs::permissions(filename, FS_ENUM_PERMS_ALL);
+        fs::permissions(filename, miopen::fs::perms::all);
     }
     else
     {
@@ -286,7 +261,7 @@ bool PlainTextDb::FlushUnsafe(const DbRecord& record, const RecordPositions* pos
         fs::remove(filename);
         fs::rename(temp_name, filename);
         /// \todo What if rename fails? Thou shalt not loose the original file.
-        fs::permissions(filename, FS_ENUM_PERMS_ALL);
+        fs::permissions(filename, miopen::fs::perms::all);
     }
     return true;
 }

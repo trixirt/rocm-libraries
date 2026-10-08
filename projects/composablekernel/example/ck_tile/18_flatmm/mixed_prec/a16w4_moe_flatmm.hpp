@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 
 #pragma once
 
@@ -13,7 +13,7 @@
 // GEMM config with 16x16 warp tile
 struct A16W4_FlatmmConfig16
 {
-    static constexpr ck_tile::index_t M_Tile = 128;
+    static constexpr ck_tile::index_t M_Tile = 32;
     static constexpr ck_tile::index_t N_Tile = 256;
     static constexpr ck_tile::index_t K_Tile = 256;
 
@@ -23,7 +23,11 @@ struct A16W4_FlatmmConfig16
 
     static constexpr ck_tile::index_t M_Warp_Tile = 16;
     static constexpr ck_tile::index_t N_Warp_Tile = 16;
+#if CK_TILE_USE_WMMA && !defined(CK_USE_GFX1250)
+    static constexpr ck_tile::index_t K_Warp_Tile = 16;
+#else
     static constexpr ck_tile::index_t K_Warp_Tile = 32;
+#endif
 
     static constexpr bool kPadM = false;
     static constexpr bool kPadN = false;
@@ -69,7 +73,7 @@ auto create_args(int argc, char* argv[])
         .insert("c_layout", "R", "C tensor data layout - Row by default.")
         .insert("gemm_kind",
                 "gemm1_gate_up",
-                "Gemm kind in FFN network [gemm1_gate_up | gemm2] - "
+                "Gemm kind in FFN network [gemm1_gate_up | gemm2 | gemm1_split_k] - "
                 "gemm1_gate_up by default.")
         .insert("validate", "1", "0. No validation, 1. Validation on CPU.")
         .insert("warmup", "50", "number of iterations before benchmark the kernel")
@@ -80,7 +84,8 @@ auto create_args(int argc, char* argv[])
         .insert("warp_tile",
                 "0",
                 "0: 16x16, 1: 16x16 (950 only, may use a larger tile than warp_tile=0)")
-        .insert("repeat", "10", "number of iterations to benchmark the kernel.");
+        .insert("repeat", "10", "number of iterations to benchmark the kernel.")
+        .insert("k_batch", "1", "parallism to control splik-k.");
 
     bool result = arg_parser.parse(argc, argv);
     return std::make_tuple(result, arg_parser);

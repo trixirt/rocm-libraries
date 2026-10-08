@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2017-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -44,10 +44,12 @@
 #include <iostream>
 #include <iterator>
 
-BEGIN_ROCPRIM_NAMESPACE
-
 /// \addtogroup devicemodule
 /// @{
+
+BEGIN_ROCPRIM_NAMESPACE
+
+#ifndef DOXYGEN_SHOULD_SKIP_THIS // Do not document
 
 namespace detail
 {
@@ -97,7 +99,8 @@ ROCPRIM_KERNEL ROCPRIM_LAUNCH_BOUNDS(ROCPRIM_DEFAULT_MAX_BLOCK_SIZE) void
 }
 
 template<lookback_scan_determinism Determinism,
-         typename config,
+         typename Config,
+         typename Selector,
          typename KeysInputIterator,
          typename ValuesInputIterator,
          typename UniqueOutputIterator,
@@ -134,10 +137,9 @@ hipError_t reduce_by_key_impl_wrapped_config(void*                     temporary
     ROCPRIM_RETURN_ON_ERROR(std::visit(
         [&](auto use_sleepy_scan, auto use_atomic_block_id)
         {
-            detail::target_arch target_arch;
-            ROCPRIM_RETURN_ON_ERROR(host_target_arch(stream, target_arch));
-            const reduce_by_key_config_params params
-                = dispatch_target_arch<config, false>(target_arch);
+            const target current_target(stream);
+
+            const auto params = get_config<Selector>(Config{}, current_target);
 
             using scan_state_type
                 = reduce_by_key::lookback_scan_state_t<accumulator_type, use_sleepy_scan>;
@@ -250,9 +252,9 @@ hipError_t reduce_by_key_impl_wrapped_config(void*                     temporary
                 ROCPRIM_DETAIL_HIP_SYNC_AND_RETURN_ON_ERROR("reduce_by_key_init_kernel",
                                                             number_of_blocks_launch,
                                                             start);
-                auto kernel = [=](auto arch_config)
+                auto kernel = [=](auto target_config)
                 {
-                    reduce_by_key::kernel_impl<decltype(arch_config), Determinism>(
+                    reduce_by_key::kernel_impl<decltype(target_config), Determinism>(
                         keys_input + offset,
                         values_input + offset,
                         unique_output,
@@ -268,12 +270,13 @@ hipError_t reduce_by_key_impl_wrapped_config(void*                     temporary
                         i > 0 ? d_previous_accumulated : nullptr,
                         ordered_bid);
                 };
-                ROCPRIM_RETURN_ON_ERROR(execute_launch_plan<config>(target_arch,
-                                                                    kernel,
-                                                                    dim3(number_of_blocks_launch),
-                                                                    dim3(block_size),
-                                                                    0,
-                                                                    stream));
+                ROCPRIM_RETURN_ON_ERROR(
+                    execute_launch_plan<Config, Selector>(current_target,
+                                                          kernel,
+                                                          dim3(number_of_blocks_launch),
+                                                          dim3(block_size),
+                                                          0,
+                                                          stream));
                 ROCPRIM_DETAIL_HIP_SYNC_AND_RETURN_ON_ERROR("reduce_by_key_kernel",
                                                             current_size,
                                                             start);
@@ -310,24 +313,26 @@ hipError_t reduce_by_key_impl(void*                     temporary_storage,
 {
     using key_type         = ::rocprim::detail::value_type_t<KeysInputIterator>;
     using accumulator_type = reduce_by_key::accumulator_type_t<ValuesInputIterator, BinaryFunction>;
+    using Selector = reduce_by_key_config_selector<key_type, accumulator_type, BinaryFunction>;
 
-    using config = wrapped_reduce_by_key_config<Config, key_type, accumulator_type, BinaryFunction>;
-
-    return detail::reduce_by_key_impl_wrapped_config<Determinism, config>(temporary_storage,
-                                                                          storage_size,
-                                                                          keys_input,
-                                                                          values_input,
-                                                                          size,
-                                                                          unique_output,
-                                                                          aggregates_output,
-                                                                          unique_count_output,
-                                                                          reduce_op,
-                                                                          key_compare_op,
-                                                                          stream,
-                                                                          debug_synchronous);
+    return detail::reduce_by_key_impl_wrapped_config<Determinism, Config, Selector>(
+        temporary_storage,
+        storage_size,
+        keys_input,
+        values_input,
+        size,
+        unique_output,
+        aggregates_output,
+        unique_count_output,
+        reduce_op,
+        key_compare_op,
+        stream,
+        debug_synchronous);
 }
 
 } // namespace detail
+
+#endif // DOXYGEN_SHOULD_SKIP_THIS
 
 /// \brief Parallel reduce-by-key primitive for device level.
 ///
@@ -401,6 +406,8 @@ hipError_t reduce_by_key_impl(void*                     temporary_storage,
 /// \parblock
 /// In this example a device-level sum operation is performed on an array of
 /// integer values and integer keys.
+///
+/// The full example is [on GitHub](https://github.com/ROCm/rocm-libraries/tree/develop/projects/rocprim/example/rocprim/device/example_device_reduce_by_key.cpp).
 ///
 /// \code{.cpp}
 /// #include <rocprim/rocprim.hpp>
@@ -520,9 +527,9 @@ inline hipError_t deterministic_reduce_by_key(void*                     temporar
         debug_synchronous);
 }
 
+END_ROCPRIM_NAMESPACE
+
 /// @}
 // end of group devicemodule
-
-END_ROCPRIM_NAMESPACE
 
 #endif // ROCPRIM_DEVICE_DEVICE_REDUCE_BY_KEY_HPP_

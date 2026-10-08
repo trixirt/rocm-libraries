@@ -21,7 +21,15 @@ The rocSOLVER repository for ROCm 7.0.2 and earlier is located at `<https://gith
 
   .. grid-item-card:: Install
 
-    * :doc:`Installation guide <./installation/installlinux>`
+    * :doc:`Install rocSOLVER <./installation/installlinux>`
+    * :doc:`Build from source <./installation/build>`
+
+.. grid:: 2
+  :gutter: 3
+
+  .. grid-item-card:: Conceptual
+
+    * :doc:`Introduction to rocSOLVER <./conceptual/intro-rocsolver>`
 
   .. grid-item-card:: How to
 
@@ -29,7 +37,6 @@ The rocSOLVER repository for ROCm 7.0.2 and earlier is located at `<https://gith
     * :doc:`Apply the memory model <./howto/memory>`
     * :doc:`Use multi-level logging <./howto/logging>`
     * :doc:`Run rocSOLVER clients <./howto/clients>`
-    * :doc:`Contribute to rocSOLVER <./howto/contribute>`
 
   .. grid-item-card:: Examples
 
@@ -37,9 +44,9 @@ The rocSOLVER repository for ROCm 7.0.2 and earlier is located at `<https://gith
 
   .. grid-item-card:: API reference
 
-    * :doc:`rocSOLVER API introduction <./reference/intro>`
+    * :doc:`rocSOLVER API summary <./reference/intro>`
     * :doc:`rocSOLVER types <./reference/types>`
-    * :doc:`rocSOLVER precision support <./reference/precision>`
+    * :doc:`rocSOLVER precision support <./reference/data_type_support>`
     * :doc:`rocSOLVER environment variables <./reference/env_variables>`
     * :doc:`LAPACK auxiliary functions <./reference/auxiliary>`
     * :doc:`LAPACK functions <./reference/lapack>`
@@ -50,5 +57,6 @@ The rocSOLVER repository for ROCm 7.0.2 and earlier is located at `<https://gith
     * :doc:`Deprecated components <./reference/deprecated>`
 
 To contribute to the documentation, see `Contributing to ROCm <https://rocm.docs.amd.com/en/latest/contribute/contributing.html>`_.
+For information on contributing to the rocSOLVER code base, see :doc:`Contribute to rocSOLVER <./contribute>`.
 
 You can find licensing information on the `Licensing <https://rocm.docs.amd.com/en/latest/about/license.html>`_ page.

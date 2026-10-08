@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
-* Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights Reserved.
+* Copyright (C) 2022-2026 Advanced Micro Devices, Inc. All rights Reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a copy
 * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,7 @@
 * ************************************************************************ */
 #pragma once
 
+#include "rocsparse_memory_check.hpp"
 #include "rocsparse_test_call.hpp"
 #include "rocsparse_test_check.hpp"
 #include "rocsparse_test_dispatch.hpp"
@@ -87,7 +88,22 @@ namespace
             using definition = RocSPARSE_Test<PROXY, PROXY_CALL>;
             static bool type_filter(const Arguments& arg)
             {
-                return dispatch_t::template dispatch<definition::template type_filter_functor>(arg);
+                const bool supported
+                    = dispatch_t::template dispatch<definition::template type_filter_functor>(arg);
+
+                // A data row that explicitly targets this routine but requests a type
+                // combination that is not wired into the dispatch would otherwise be
+                // silently dropped from the test suite. Register it anyway so that it
+                // FAILs loudly at run time (via rocsparse_test_invalid) instead of
+                // disappearing without a trace. Rows that do not name this routine
+                // (e.g. _bad_arg / _extra, or rows meant for other routines) keep the
+                // normal filtering behavior.
+                if(!supported && !strcmp(arg.function, rocsparse_test_enum::to_string(ROUTINE)))
+                {
+                    return true;
+                }
+
+                return supported;
             }
 
             static bool function_filter(const Arguments& arg)
@@ -164,40 +180,22 @@ namespace
 
             static bool memory_filter(const Arguments& arg)
             {
-                static double available_memory_in_GB = 0.0;
-                static bool   query_device_memory    = true;
-                if(query_device_memory)
+                size_t available_host   = rocsparse_memory_check::get_available_host_memory_gb();
+                size_t available_device = rocsparse_memory_check::get_available_device_memory_gb();
+
+                bool can_run = (arg.host_memory_gb <= available_host)
+                               && (arg.device_memory_gb <= available_device);
+
+                if(!can_run)
                 {
-                    size_t available_memory;
-                    size_t total_memory;
-
-                    if(hipDeviceSynchronize() != hipSuccess)
-                    {
-                        return false;
-                    }
-
-                    if(hipMemGetInfo(&available_memory, &total_memory) != hipSuccess)
-                    {
-                        return false;
-                    }
-
-                    available_memory_in_GB = (double)available_memory / (1024 * 1024 * 1024);
-
-                    query_device_memory = false;
+                    std::cout << "SKIPPING TEST: Insufficient memory" << std::endl;
+                    std::cout << "  Required host:   " << arg.host_memory_gb
+                              << " GB (available: " << available_host << " GB)" << std::endl;
+                    std::cout << "  Required device: " << arg.device_memory_gb
+                              << " GB (available: " << available_device << " GB)" << std::endl;
                 }
 
-                if(available_memory_in_GB < arg.req_memory)
-                {
-                    std::cout << "Skipping test "
-                              << (std::string(arg.category) + "/" + std::string(arg.function) + "/"
-                                  + name_suffix(arg))
-                              << " because insufficient memory avaiable. Required: "
-                              << arg.req_memory << "GB. Available: " << available_memory_in_GB
-                              << "GB." << std::endl;
-                    return false;
-                }
-
-                return true;
+                return can_run;
             }
 
             static std::string name_suffix(const Arguments& arg)
@@ -275,6 +273,7 @@ namespace
                     break;
                 }
                 case rocsparse_test_dispatch_enum::iabct:
+                case rocsparse_test_dispatch_enum::iabct_sddmm:
                 {
                     s << rocsparse_indextype2string(arg.index_type_I) << '_'
                       << rocsparse_datatype2string(arg.a_type) << '_'

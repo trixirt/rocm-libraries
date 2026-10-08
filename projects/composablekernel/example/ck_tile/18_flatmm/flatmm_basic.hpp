@@ -1,6 +1,5 @@
-
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2025, Advanced Micro Devices, Inc. All rights reserved.
 
 #pragma once
 
@@ -97,6 +96,14 @@ struct FlatmmConfig16_950 : public FlatmmConfig16<DataType>
     static constexpr bool TiledMMAPermuteN = N_Repeat % 4 == 0;
 };
 
+template <typename DataType>
+struct FlatmmConfig16_Wmma : public FlatmmConfig16<DataType>
+{
+    static constexpr ck_tile::index_t M_Tile      = 64;
+    static constexpr ck_tile::index_t K_Tile      = 64;
+    static constexpr ck_tile::index_t K_Warp_Tile = ck_tile::get_k_warp_tile<DataType, 16>();
+};
+
 template <typename ADataType>
 struct GemmBasicTypeConfig;
 
@@ -135,38 +142,6 @@ struct GemmBasicTypeConfig<ck_tile::bf8_t>
     using BDataType   = ck_tile::bf8_t;
     using AccDataType = float;
     using CDataType   = ck_tile::half_t;
-};
-
-template <typename T>
-struct DataTypeTraits;
-
-template <>
-struct DataTypeTraits<ck_tile::fp8_t>
-{
-    static constexpr const char* name = "fp8";
-};
-
-template <>
-struct DataTypeTraits<ck_tile::bf8_t>
-{
-    static constexpr const char* name = "bf8";
-};
-template <>
-struct DataTypeTraits<float>
-{
-    static constexpr const char* name = "fp32";
-};
-
-template <>
-struct DataTypeTraits<double>
-{
-    static constexpr const char* name = "fp64";
-};
-
-template <>
-struct DataTypeTraits<ck_tile::half_t>
-{
-    static constexpr const char* name = "fp16";
 };
 
 template <typename T>

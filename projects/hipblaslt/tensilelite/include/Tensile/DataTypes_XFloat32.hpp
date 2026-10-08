@@ -30,6 +30,8 @@
 #include <cmath>
 #include <iostream>
 
+#include <tensilelitehost/export.h>
+
 #define TENSILE_USE_XF32
 
 #ifndef __BYTE_ORDER__
@@ -86,12 +88,6 @@ namespace TensileLite
 
     private:
         static constexpr const float XFloat32_ZERO_VALUE = 0.0f;
-
-        // zero extend lower 13 bits of XFloat32 to convert to IEEE float
-        static float XFloat32_to_float(const XFloat32 v)
-        {
-            return v.data;
-        }
 
         // truncate lower 13 bits of IEEE float to convert to XFloat32
         // not reserved the signaling NaN.

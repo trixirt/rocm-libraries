@@ -1,28 +1,5 @@
-/*******************************************************************************
- *
- * MIT License
- *
- * Copyright 2021-2025 AMD ROCm(TM) Software
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- *******************************************************************************/
+// Copyright Advanced Micro Devices, Inc., or its affiliates.
+// SPDX-License-Identifier: MIT
 
 #pragma once
 
@@ -339,7 +316,8 @@ namespace rocRoller
                    || dt == DataType::FP6x16 || dt == DataType::BF6x16 || dt == DataType::FP4x8
                    || dt == DataType::Double || dt == DataType::Int32 || dt == DataType::Int64
                    || dt == DataType::UInt32 || dt == DataType::UInt64 || dt == DataType::Bool
-                   || dt == DataType::Bool32 || dt == DataType::Bool64;
+                   || dt == DataType::Bool32 || dt == DataType::Bool64 || dt == DataType::E8M0x4
+                   || dt == DataType::E5M3x4 || dt == DataType::E4M3x4;
         }
 
         inline ExpressionPtr convert(DataType dt, ExpressionPtr a)
@@ -371,6 +349,26 @@ namespace rocRoller
             return convert(DATATYPE, a);
         }
 
+        inline ExpressionPtr reinterpret(DataType dt, ExpressionPtr a)
+        {
+            auto argType = resultVariableType(a);
+            auto srcSize = DataTypeInfo::Get(argType.dataType).elementBytes;
+            auto dstSize = DataTypeInfo::Get(dt).elementBytes;
+
+            AssertFatal(srcSize == dstSize,
+                        "Reinterpret requires same size types: source type ",
+                        toString(argType.dataType),
+                        " (",
+                        srcSize,
+                        " bytes) != destination type ",
+                        toString(dt),
+                        " (",
+                        dstSize,
+                        " bytes)");
+
+            return std::make_shared<Expression>(Reinterpret{{.arg{a}}, dt});
+        }
+
         template <CCommandArgumentValue T>
         inline ExpressionPtr literal(T value)
         {
@@ -385,6 +383,18 @@ namespace rocRoller
                                                 literal(value.desc3)};
             return std::make_shared<Expression>(
                 Concatenate{{operands}, {DataType::None, PointerType::Buffer}});
+        }
+
+        inline ExpressionPtr literal(TDM value)
+        {
+            std::vector<ExpressionPtr> operands;
+
+            std::for_each(std::begin(value.parts),
+                          std::end(value.parts),
+                          [&operands](auto const& v) { operands.push_back(literal(v)); });
+
+            return std::make_shared<Expression>(
+                Concatenate{{operands}, {DataType::None, PointerType::TDM}});
         }
 
         template <CCommandArgumentValue T>
@@ -490,6 +500,8 @@ namespace rocRoller
         EXPRESSION_INFO(BitFieldExtract);
 
         EXPRESSION_INFO(Convert);
+
+        EXPRESSION_INFO(Reinterpret);
 
         EXPRESSION_INFO(Concatenate);
 
@@ -706,6 +718,5 @@ namespace rocRoller
                 return std::make_tuple(exp.lhs, exp.r1hs, exp.r2hs);
             }
         }
-
     }
 }

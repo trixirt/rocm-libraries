@@ -124,6 +124,21 @@ Docker images are available on [DockerHub](https://hub.docker.com/r/rocm/composa
     ../script/cmake-ck-dev.sh .. gfx90a -DCMAKE_BUILD_TYPE=Release
     ```
 
+    **Fast iteration builds:**
+
+    For faster CMake configuration during development (~5s vs ~150s), use the `--minimal` flag to disable
+    building device instances, profiler, examples, tutorials, and tests:
+
+    ```bash
+    ../script/cmake-ck-dev.sh --minimal .. gfx90a
+    ```
+
+    You can also specify a custom preset:
+
+    ```bash
+    ../script/cmake-ck-dev.sh --preset=dev-minimal .. gfx90a
+    ```
+
 5. Build the entire CK library:
 
     ```bash
@@ -136,6 +151,22 @@ Docker images are available on [DockerHub](https://hub.docker.com/r/rocm/composa
     make -j install
     ```
     **[See Note on -j](#notes)**
+
+### Building for Windows
+
+Install TheRock and run CMake configure as
+
+```bash
+    cmake                                                                                      \
+    -D CMAKE_PREFIX_PATH="C:/dist/TheRock"                                                     \
+    -D CMAKE_CXX_COMPILER="C:/dist/TheRock/bin/hipcc.exe"                                      \
+    -D CMAKE_BUILD_TYPE=Release                                                                \
+    -D GPU_TARGETS="gfx1151"                                                                   \
+    -G Ninja                                                                                   \
+    ..
+```
+
+Use Ninja to build either the whole library or individual targets.
 
 ## Optional post-install steps
 
@@ -187,7 +218,7 @@ limit the number of threads. For example, if you have a 128-core CPU and 128 Gb 
 
 Additional cmake flags can be used to significantly speed-up the build:
 
-* `DTYPES` (default is not set) can be set to any subset of "fp64;fp32;fp16;fp8;bf16;int8" to build
+* `DTYPES` (default is not set) can be set to any subset of "fp64;fp32;tf32;fp16;fp8;bf16;int8" to build
   instances of select data types only. The main default data types are fp32 and fp16; you can safely skip
   other data types.
 
@@ -199,7 +230,7 @@ Additional cmake flags can be used to significantly speed-up the build:
   These instances offer a slightly better performance of fp16 gemms on NAVI2x. But on other architectures faster alternatives are available.
 
 * `CK_USE_FP8_ON_UNSUPPORTED_ARCH` (default is OFF) must be set to ON in order to build instances,
-  such as `gemm_universal`, `gemm_universal_streamk` and `gemm_multiply_multiply` for fp8 data type for GPU targets which do not  have native support for fp8 data type, such as gfx908 or gfx90a. These instances are useful on
+  such as `gemm_universal`, and `gemm_multiply_multiply` for fp8 data type for GPU targets which do not  have native support for fp8 data type, such as gfx908 or gfx90a. These instances are useful on
   architectures like the MI100/MI200 for the functional support only.
 
 ## Using sccache for building

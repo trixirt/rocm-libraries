@@ -892,6 +892,9 @@ bool ConvAsmImplicitGemmGTCDynamicWrwXdlopsNHWC::IsApplicable(
     if(!problem.AllTensorsDimsFitIntoInt())
         return false;
 
+    if(igemm_tensor_size_exceeds_asm_gtc_addressing(problem))
+        return false;
+
     if(!problem.IsFp32() && !problem.IsFp16() &&
        !(problem.IsBfp16() &&
          (device_name == "gfx90a" || device_name == "gfx942" || StartsWith(device_name, "gfx95"))))
@@ -904,8 +907,8 @@ bool ConvAsmImplicitGemmGTCDynamicWrwXdlopsNHWC::IsApplicable(
         return false;
 
     const auto& target = ctx.GetStream().GetTargetProperties();
-    if(target.Xnack() && *target.Xnack())
-        return false; // NOLINT (readability-simplify-boolean-expr)
+    if(target.isXnackEnabled())
+        return false;
 
     if(0 ==
        igemm_split_batch_size(ProblemInterpreter::GetInputHeightHi(problem),

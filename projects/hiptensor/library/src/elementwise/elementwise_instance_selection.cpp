@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -4103,7 +4103,8 @@ namespace hiptensor
             {32, 128, 512, 2048, 8192, 32768, 131072, 524288},
             {32, 256, 2048, 16384, 131072},
         };
-        if(lengths.size()>=edgeList.size()) return {};
+        if(lengths.size() >= edgeList.size())
+            return {};
         auto&                    edges = edgeList[lengths.size()];
         std::vector<ck::index_t> point;
         point.reserve(lengths.size());
@@ -4140,7 +4141,11 @@ namespace hiptensor
             case 6:
                 break;
             }
-            if(lut)
+            // The table was tuned over inputs that carry every output mode, so a key only means
+            // anything when both the lengths and the permutation cover the full rank. A broadcast
+            // input leaves them short, in which case fall through to the default hyper-parameters.
+            if(lut && lengths.size() == static_cast<std::size_t>(numDim)
+               && outputMode.size() == static_cast<std::size_t>(numDim))
             {
                 auto key = hipTypeToString(typeIn[0]);
                 for(auto&& index : findRepresentPointOfSubSpace(lengths))

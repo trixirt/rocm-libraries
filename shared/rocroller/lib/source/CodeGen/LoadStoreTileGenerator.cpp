@@ -1,28 +1,5 @@
-/*******************************************************************************
- *
- * MIT License
- *
- * Copyright 2024-2025 AMD ROCm(TM) Software
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- *******************************************************************************/
+// Copyright Advanced Micro Devices, Inc., or its affiliates.
+// SPDX-License-Identifier: MIT
 
 #include <memory>
 
@@ -44,8 +21,8 @@
 #include <rocRoller/KernelGraph/KernelGraph.hpp>
 #include <rocRoller/KernelGraph/RegisterTagManager.hpp>
 #include <rocRoller/KernelGraph/ScopeManager.hpp>
-#include <rocRoller/KernelGraph/Transforms/LowerTile_details.hpp>
 #include <rocRoller/KernelGraph/Utils.hpp>
+#include <rocRoller/KernelOptions_detail.hpp>
 #include <rocRoller/Scheduling/Scheduler.hpp>
 #include <rocRoller/Utilities/Error.hpp>
 
@@ -58,17 +35,12 @@ namespace rocRoller
         using namespace ControlGraph;
         using namespace CoordinateGraph;
         using namespace Expression;
-        using namespace LowerTileDetails;
 
         std::string toString(LoadStoreTileGenerator::LoadStoreTileInfo const& info)
         {
 #define ShowReg(reg)                                              \
     (reg ? concatenate("\t" #reg " = ", reg->description(), "\n") \
          : concatenate("\t" #reg " = (nullptr)\n"))
-#define ShowBuf(buf)                                                              \
-    (buf && buf->allRegisters()                                                   \
-         ? concatenate("\t" #buf " = ", buf->allRegisters()->description(), "\n") \
-         : concatenate("\t" #buf " = (nullptr)\n"))
 
             return concatenate("LSTInfo {\n",
                                ShowValue(info.kind),
@@ -84,7 +56,7 @@ namespace rocRoller
                                ShowReg(info.colStrideReg),
                                ShowValue(info.colStrideAttributes),
                                ShowReg(info.offset),
-                               ShowBuf(info.bufDesc),
+                               ShowReg(info.bufDesc),
                                ShowValue(info.bufOpts),
                                ShowValue(info.isTransposedTile),
                                "}");
@@ -111,11 +83,11 @@ namespace rocRoller
             return Expression::literal(x);
         }
 
-        inline std::shared_ptr<BufferDescriptor> LoadStoreTileGenerator::getBufferDesc(int tag)
+        inline Register::ValuePtr LoadStoreTileGenerator::getBufferDesc(int tag)
         {
             auto bufferTag = m_graph->mapper.get<Buffer>(tag);
             auto bufferSrd = m_context->registerTagManager()->getRegister(bufferTag);
-            return std::make_shared<BufferDescriptor>(bufferSrd, m_context);
+            return bufferSrd;
         }
 
         /**
@@ -193,17 +165,31 @@ namespace rocRoller
             return result;
         }
 
-        DataType getOffsetTypeFromComputeIndex(const KernelGraph& graph, int offsetTag)
+        DataType getOffsetDataTypeFromGraph(int                op,
+                                            KernelGraph const& graph,
+                                            bool               isStorePartOfGlobalToLDSOp)
         {
-            for(auto const& conn : graph.mapper.getCoordinateConnections(offsetTag))
+            DataType rv = DataType::UInt64;
+            auto     s  = graph.control.get<StoreTiled>(op);
+            auto     l  = graph.control.get<LoadTiled>(op);
+            auto     ll = graph.control.get<LoadLDSTile>(op);
+            auto     sl = graph.control.get<StoreLDSTile>(op);
+
+            auto isGlobalLoad = false;
+            if(l)
             {
-                if(auto computeIndex = graph.control.get<ComputeIndex>(conn.control);
-                   computeIndex.has_value())
+                auto [_, macTile] = graph.getDimension<MacroTile>(op);
+                if(macTile.memoryType == MemoryType::WAVE_FROM_GLOBAL)
                 {
-                    return computeIndex->offsetType;
+                    isGlobalLoad = true;
                 }
             }
-            Throw<FatalError>("No ComputeIndex found for Offset tag.", ShowValue(offsetTag));
+
+            if(s || (l and not isGlobalLoad) || ll || sl || isStorePartOfGlobalToLDSOp)
+            {
+                rv = DataType::UInt32;
+            }
+            return rv;
         }
 
         Generator<Instruction> LoadStoreTileGenerator::getOffset(LoadStoreTileInfo& info,
@@ -272,9 +258,9 @@ namespace rocRoller
                     info.rowOffsetReg = m_context->registerTagManager()->getRegister(
                         offsetTag,
                         Register::Type::Vector,
-                        getOffsetTypeFromComputeIndex(*m_graph, offsetTag),
+                        getOffsetDataTypeFromGraph(info.tag, *m_graph, isStorePartOfGlobalToLDS),
                         1);
-                    info.rowOffsetReg->setName(concatenate("offset", offsetTag));
+                    info.rowOffsetReg->setName(concatenate("Offset", offsetTag));
                     m_context->getScopeManager()->addRegister(offsetTag);
 
                     // Copy base to new offset register
@@ -334,7 +320,7 @@ namespace rocRoller
                 {
                     stride = Register::Value::Placeholder(
                         m_context, Register::Type::Vector, strideAttributes.dataType, 1);
-                    stride->setName("Stride");
+                    stride->setName(concatenate("Stride", strideTag));
                 }
                 else
                 {
@@ -342,151 +328,6 @@ namespace rocRoller
                 }
 
                 co_yield generate(stride, strideExpr);
-            }
-        }
-
-        Generator<Instruction> LoadStoreTileGenerator::genComputeIndex(int                 tag,
-                                                                       ComputeIndex const& ci,
-                                                                       Transformer         coords)
-        {
-            auto tagger = m_context->registerTagManager();
-
-            auto base = m_graph->mapper.get(
-                tag, Connections::ComputeIndex{Connections::ComputeIndexArgument::BASE});
-            auto offset = m_graph->mapper.get(
-                tag, Connections::ComputeIndex{Connections::ComputeIndexArgument::OFFSET});
-            auto stride = m_graph->mapper.get(
-                tag, Connections::ComputeIndex{Connections::ComputeIndexArgument::STRIDE});
-            auto target = m_graph->mapper.get(
-                tag, Connections::ComputeIndex{Connections::ComputeIndexArgument::TARGET});
-            auto increment = m_graph->mapper.get(
-                tag, Connections::ComputeIndex{Connections::ComputeIndexArgument::INCREMENT});
-            auto buffer = m_graph->mapper.get(
-                tag, Connections::ComputeIndex{Connections::ComputeIndexArgument::BUFFER});
-
-            auto info = fmt::format("KernelGraph::LoadStoreTileGenerator::ComputeIndex({}): "
-                                    "target {} increment {} base {} offset {} stride {} buffer {}",
-                                    tag,
-                                    target,
-                                    increment,
-                                    base,
-                                    offset,
-                                    stride,
-                                    buffer);
-            Log::debug(info);
-            co_yield Instruction::Comment(info);
-
-            // TODO: Design a better way of binding storage to coordinates
-            auto maybeLDS = m_graph->coordinates.get<LDS>(target);
-            if(maybeLDS)
-            {
-                // If target is LDS; it might be a duplicated LDS
-                // node.  For the purposes of computing indexes,
-                // use the parent LDS as the target instead.
-                namespace CT = rocRoller::KernelGraph::CoordinateGraph;
-
-                auto maybeParentLDS = only(
-                    m_graph->coordinates.getOutputNodeIndices(target, CT::isEdge<Duplicate>));
-                if(maybeParentLDS)
-                    target = *maybeParentLDS;
-            }
-            maybeLDS = m_graph->coordinates.get<LDS>(target);
-
-            auto isTransposed
-                = m_graph->coordinates
-                      .findNodes(target,
-                                 [&](int tag) -> bool {
-                                     auto maybeAdhoc = m_graph->coordinates.get<Adhoc>(tag);
-                                     return maybeAdhoc
-                                            && maybeAdhoc->name() == "Adhoc.transpose.simdsPerWave";
-                                 })
-                      .to<std::vector>()
-                      .size()
-                  == 1;
-
-            auto scope = m_context->getScopeManager();
-
-            auto toBytes = [&](ExpressionPtr expr) -> ExpressionPtr {
-                uint numBits = DataTypeInfo::Get(ci.valueType).elementBits;
-
-                // TODO: This would be a good place to add a GPU
-                // assert.  If numBits is not a multiple of 8, assert
-                // that (expr * numBits) is a multiple of 8.
-                Log::debug("  toBytes: {}: numBits {}", toString(ci.valueType), numBits);
-
-                if(numBits % 8u == 0)
-                    return expr * L(numBits / 8u);
-                return (expr * L(numBits)) / L(8u);
-            };
-
-            // Set the zero-coordinates to zero
-            auto fullStop  = [&](int tag) { return tag == increment; };
-            auto direction = ci.forward ? Graph::Direction::Upstream : Graph::Direction::Downstream;
-            auto [required, path] = findRequiredCoordinates(target, direction, fullStop, *m_graph);
-
-            for(auto tag : required)
-                if((tag != increment) && (!coords.hasCoordinate(tag)))
-                    coords.setCoordinate(tag, L(0u));
-
-            // Set the increment coordinate to zero if it doesn't
-            // already have a value
-            bool initializeIncrement = !coords.hasPath({target}, ci.forward);
-            if(initializeIncrement)
-            {
-                coords.setCoordinate(increment, L(0u));
-            }
-
-            if(base < 0 && offset > 0)
-            {
-                auto offsetType = Register::Type::Vector;
-                if(ci.isStorePartOfGlobalToLDS)
-                    offsetType = Register::Type::Scalar;
-                auto offsetReg = tagger->getRegister(offset, offsetType, ci.offsetType, 1);
-                offsetReg->setName(concatenate("Offset", tag));
-                scope->addRegister(offset);
-            }
-
-            // Create a buffer descriptor
-            if(buffer > 0)
-            {
-                auto user = m_graph->coordinates.get<User>(target);
-                if(user && !tagger->hasRegister(buffer))
-                {
-                    AssertFatal(
-                        user->size, "Invalid User dimension: missing size.", ShowValue(target));
-
-                    auto bufferReg = tagger->getRegister(
-                        buffer, Register::Type::Scalar, {DataType::None, PointerType::Buffer}, 1);
-                    bufferReg->setName(concatenate("Buffer", buffer));
-                    if(bufferReg->allocationState() == Register::AllocationState::Unallocated)
-                    {
-                        Register::ValuePtr basePointer;
-                        auto               bufDesc = BufferDescriptor(bufferReg, m_context);
-                        co_yield m_context->argLoader()->getValue(user->argumentName, basePointer);
-                        if(user->offset && !Expression::canEvaluateTo(0u, user->offset))
-                        {
-                            Register::ValuePtr tmpRegister;
-                            co_yield generate(tmpRegister,
-                                              simplify(basePointer->expression() + user->offset));
-                            co_yield bufDesc.setBasePointer(tmpRegister);
-                        }
-                        else
-                        {
-                            co_yield bufDesc.setBasePointer(basePointer);
-                        }
-
-                        co_yield bufDesc.setDefaultOpts();
-                        Register::ValuePtr limitValue;
-                        co_yield generate(limitValue, toBytes(user->size));
-                        // TODO: Handle sizes larger than 32 bits
-                        auto limit = (limitValue->regType() == Register::Type::Literal)
-                                         ? limitValue
-                                         : limitValue->subset({0});
-                        limit->setVariableType(DataType::UInt32);
-                        co_yield bufDesc.setSize(limit);
-                    }
-                    scope->addRegister(buffer);
-                }
             }
         }
 
@@ -501,10 +342,10 @@ namespace rocRoller
             else
                 AssertFatal(numBytes == 1 || numBytes == 2 || numBytes == 4, ShowValue(numBytes));
             auto m0 = m_context->getM0();
-            AssertFatal(info.ldsWriteStride == m_workgroupSizeTotal * numBytes,
-                        ShowValue(info.ldsWriteStride),
-                        ShowValue(m_workgroupSizeTotal),
-                        ShowValue(numBytes));
+
+            // When padding, the ldsWriteStride might be larger than m_workgroupSizeTotal * numBytes
+            AssertFatal(info.ldsWriteStride >= m_workgroupSizeTotal * numBytes,
+                        ShowValue(info.ldsWriteStride));
 
             if(setM0)
             {
@@ -521,7 +362,7 @@ namespace rocRoller
                 const auto offsetValue = getUnsignedInt(info.offset->getLiteralValue());
                 info.offset            = Register::Value::Placeholder(
                     m_context, Register::Type::Scalar, DataType::UInt32, 1);
-                info.offset->setName("Offset");
+                info.offset->setName("OffsetD2L");
                 co_yield generate(info.offset, Expression::literal(offsetValue))
                     .map(AddComment(fmt::format("{} is not a supported value!", offsetValue)));
             }
@@ -607,6 +448,8 @@ namespace rocRoller
                         auto stop  = (i * numVGPRBlocks + r + 1) * elementsPerMove;
                         if(info.bufOpts.lds)
                         {
+                            info.offset
+                                = Register::Value::Literal(offsetValue + r * elementBlockStride);
                             co_yield moveTileDirect2LDS<Dir>(
                                 info, bytesPerMove, (i == 0 && r == 0), info.rowOffsetReg);
                         }
@@ -624,7 +467,25 @@ namespace rocRoller
                                 info.bufOpts);
                         }
                     }
-                    offsetValue += rowStride;
+
+                    if(i < info.m - 1)
+                    {
+                        if(info.isMacroTileRowStride)
+                        {
+                            const auto rowElementBlockStride
+                                = info.rowStrideAttributes.elementBlockStride;
+                            AssertFatal(Expression::evaluationTimes(
+                                            rowElementBlockStride)[EvaluationTime::Translate],
+                                        "Could not determine "
+                                        "rowStrideAttributes.ElementBlockStride at translate-time.",
+                                        ShowValue(rowElementBlockStride));
+                            offsetValue += getUnsignedInt(evaluate(rowElementBlockStride));
+                        }
+                        else
+                        {
+                            offsetValue += rowStride;
+                        }
+                    }
                 }
             }
             else if(info.isTransposedTile)
@@ -646,6 +507,8 @@ namespace rocRoller
                     = getUnsignedInt(evaluate(info.colStrideAttributes.elementBlockStride));
                 const auto trLoadPairStride
                     = getUnsignedInt(evaluate(info.colStrideAttributes.trLoadPairStride));
+
+                const auto wfs = arch.GetCapability(GPUCapability::DefaultWavefrontSize);
 
                 AssertFatal((info.n * info.packedAmount) % elementsPerTrLoad == 0,
                             "WaveTileN must be multiple of the number of elements loaded by each "
@@ -691,7 +554,9 @@ namespace rocRoller
                         auto start = (i * numTrLoads + (j + 0)) * numVGPRBlocks;
                         auto stop  = (i * numTrLoads + (j + 1)) * numVGPRBlocks;
                         auto trLoadOffset
-                            = (j % 2) * trLoadPairStride + (j / 2) * elementBlockStride;
+                            = (wfs == 32 && isF16(info.data->variableType().dataType))
+                                  ? j * trLoadPairStride
+                                  : (j % 2) * trLoadPairStride + (j / 2) * elementBlockStride;
                         co_yield m_context->mem()->transposeLoadLocal(
                             info.data->element(Generated(iota(start, stop))),
                             info.rowOffsetReg,
@@ -853,7 +718,7 @@ namespace rocRoller
                 {
                     co_yield m_context->mem()->moveData<Dir>(
                         info.kind,
-                        colOffsetReg->subset({0}),
+                        colOffsetReg,
                         info.data->element(
                             {static_cast<int>((i * info.n + j) / info.packedAmount)}),
                         info.offset,
@@ -947,19 +812,34 @@ namespace rocRoller
                 auto allocOptions = Register::AllocationOptions::FullyContiguous();
 
                 auto elementBits = DataTypeInfo::Get(varTypeInfo.segmentVariableType).elementBits;
-                if(elementBits == 6 && info.isPadded && !info.isTransposedTile)
+                const auto& arch = m_context->targetArchitecture();
+                auto        macTile = m_graph->coordinates.getNode<MacroTile>(macTileTag);
+                if(macTile.memoryType == MemoryType::VGPR && elementBits == 6
+                   && (!arch.HasCapability(GPUCapability::DSReadTransposeB6PaddingBytes)
+                       || info.isPadded)
+                   && !info.isTransposedTile)
                 {
-                    auto registerCount = varTypeInfo.registerCount;
+                    // FIXME: fix contiguousChunkWidth calculation
+                    auto registerCount = arch.target().gfx == GPUArchitectureGFX::GFX1250
+                                             ? info.n * varTypeInfo.registerCount
+                                             : varTypeInfo.registerCount;
                     allocOptions = {.contiguousChunkWidth = int(registerCount), .alignment = 2};
                     co_yield Instruction::Comment(
                         concatenate("Allocation options: ", allocOptions));
+                }
+
+                if(arch.HasCapability(GPUCapability::HasVGPRIndexing)
+                   and isScaleType(varTypeInfo.variableType.dataType))
+                {
+                    allocOptions.forceReservedRegion = true;
                 }
 
                 auto tmpl = Register::Value::Placeholder(
                     m_context, Register::Type::Vector, info.varType, info.m * info.n, allocOptions);
                 tmpl->setName("tmpl");
 
-                if(info.kind == MemoryInstructions::MemoryKind::Buffer2LDS)
+                if(info.kind == MemoryInstructions::MemoryKind::Buffer2LDS
+                   || info.kind == MemoryInstructions::MemoryKind::TDMToLDS)
                 {
                     info.bufOpts.lds = 1;
 
@@ -1035,11 +915,12 @@ namespace rocRoller
                 ShowValue(Dir) + toString(info)
                 + concatenate(ShowValue(allStridesAreLiteral), ShowValue(colStrideIsOne)));
 
-            // Get the values from the associated ComputeIndex node
+            // Get the offset values set by AssignIndexExpressions
             co_yield getOffset(info, coords, !allStridesAreLiteral && info.m > 1);
             AssertFatal(info.rowOffsetReg, "Invalid row offset register.");
 
-            if(info.kind == MemoryInstructions::MemoryKind::Buffer2LDS)
+            if(info.kind == MemoryInstructions::MemoryKind::Buffer2LDS
+               || info.kind == MemoryInstructions::MemoryKind::TDMToLDS)
             {
                 co_yield getOffset(
                     info, coords, /*preserveOffset=*/false, /*isStorePartOfGlobalToLDS=*/true);
@@ -1047,7 +928,29 @@ namespace rocRoller
                 // set global read offset
             }
 
-            if(allStridesAreLiteral)
+            if(info.kind == MemoryInstructions::MemoryKind::TDMToLDS)
+            {
+                auto tdmExpr = info.tdmDesc->expression();
+
+                const auto ldsAddressExpr    = info.data->expression();
+                const auto globalAddressExpr = info.rowOffsetReg->expression();
+
+                tdmExpr = TDMDescriptor::SetLDSAddress(tdmExpr, ldsAddressExpr);
+                tdmExpr = TDMDescriptor::SetGlobalAddress(tdmExpr, globalAddressExpr);
+
+                const auto tileDim0 = info.n;
+                const auto tileDim1 = info.m;
+                Log::debug(fmt::format("  TileDim0 {} TileDim1 {}", tileDim0, tileDim1));
+
+                const auto tileDim0Expr = Expression::literal(tileDim0);
+                const auto tileDim1Expr = Expression::literal(tileDim1);
+                tdmExpr = TDMDescriptor::SetTileDims(tdmExpr, tileDim0Expr, tileDim1Expr);
+
+                co_yield Expression::generate(info.tdmDesc, tdmExpr, m_context);
+
+                co_yield m_context->mem()->loadTensorToLDS(info.tdmDesc);
+            }
+            else if(allStridesAreLiteral)
             {
                 co_yield moveTileLiteralStrides<Dir>(info);
             }
@@ -1102,26 +1005,28 @@ namespace rocRoller
             co_yield moveTile<MemoryInstructions::MemoryDirection::Load>(info, coords);
         }
 
-        Generator<Instruction> LoadStoreTileGenerator::loadMacroTileLDS(int                tag,
-                                                                        LoadLDSTile const& load,
-                                                                        Transformer        coords)
+        LoadStoreTileGenerator::LoadStoreTileInfo
+            LoadStoreTileGenerator::loadMacroTileLDSInfo(int tag, LoadLDSTile const& load)
         {
-            auto [ldsTag, lds]   = m_graph->getDimension<LDS>(tag);
-            auto [tileTag, tile] = m_graph->getDimension<MacroTile>(tag);
+            auto [ldsTag, _lds]   = m_graph->getDimension<LDS>(tag);
+            auto [tileTag, _tile] = m_graph->getDimension<MacroTile>(tag);
 
             rocRoller::Log::getLogger()->debug(
                 "KernelGraph::LoadStoreTileGenerator::loadMacroTileLDS: OP {} LDS {} MacroTile {}",
                 tag,
                 ldsTag,
                 tileTag);
-            co_yield_(Instruction::Comment(concatenate(
-                "GEN: loadMacroTileLDS OP ", tag, " LDS ", ldsTag, "MacroTile ", tileTag)));
 
-            // Find the LDS allocation that contains the tile and store
-            // the offset of the beginning of the allocation into ldsOffset.
-            auto ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
+            LoadStoreTileInfo result;
+            result.comments = {concatenate(
+                "GEN: loadMacroTileLDS OP ", tag, " LDS ", ldsTag, " MacroTile ", tileTag)};
 
-            auto ldsOffset = Register::Value::Literal(ldsAllocation->getLDSAllocation()->offset());
+            if(m_context && m_context->registerTagManager()->hasRegister(ldsTag))
+            {
+                auto ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
+                result.offset
+                    = Register::Value::Literal(ldsAllocation->getLDSAllocation()->offset());
+            }
 
             auto [elemXTag, elemX] = m_graph->getDimension<ElementNumber>(tag, 0);
             auto [elemYTag, elemY] = m_graph->getDimension<ElementNumber>(tag, 1);
@@ -1132,18 +1037,13 @@ namespace rocRoller
             AssertFatal(n % packing == 0, ShowValue(n), ShowValue(packing));
             n /= packing;
 
-            LoadStoreTileInfo info{
-                .tag     = tag,
-                .kind    = MemoryInstructions::MemoryKind::Local,
-                .m       = m,
-                .n       = n,
-                .data    = nullptr,
-                .varType = load.varType,
-                .offset  = ldsOffset,
-            };
-
-            co_yield moveTile<MemoryInstructions::MemoryDirection::Load>(info, coords)
-                .map(MemoryInstructions::addExtraSrc(ldsAllocation));
+            result.tag     = tag;
+            result.kind    = MemoryInstructions::MemoryKind::Local;
+            result.m       = m;
+            result.n       = n;
+            result.data    = nullptr;
+            result.varType = load.varType;
+            return result;
         }
 
         Generator<Instruction> LoadStoreTileGenerator::loadMacroTileDirect2LDS(
@@ -1153,6 +1053,8 @@ namespace rocRoller
             auto [tileTag, tile] = m_graph->getDimension<MacroTile>(tag);
             auto varType         = load.varType;
 
+            auto packing = DataTypeInfo::Get(varType).packing;
+
             rocRoller::Log::getLogger()->debug("KernelGraph::LoadStoreTileGenerator::"
                                                "loadMacroTileDirect2LDS: OP {} LDS {} MacroTile {}",
                                                tag,
@@ -1161,13 +1063,13 @@ namespace rocRoller
             co_yield Instruction::Comment(concatenate(
                 "GEN: loadMacroTileDirect2LDS OP ", tag, " LDS ", ldsTag, " MacroTile ", tileTag));
 
-            auto numElements = product(tile.subTileSizes) * m_workgroupSizeTotal;
-
             // Allocate LDS memory, and store the offset of the beginning of the allocation
             // into ldsOffset.
             Register::ValuePtr ldsAllocation;
             if(!m_context->registerTagManager()->hasRegister(ldsTag))
             {
+                auto numElements = GetNumLDSElements(*m_graph, ldsTag) / packing;
+
                 ldsAllocation = Register::Value::AllocateLDS(m_context, varType, numElements);
                 m_context->registerTagManager()->addRegister(ldsTag, ldsAllocation);
             }
@@ -1185,7 +1087,6 @@ namespace rocRoller
             auto const m           = getUnsignedInt(evaluate(elemX.size));
             auto       n           = getUnsignedInt(evaluate(elemY.size));
 
-            auto packing = DataTypeInfo::Get(load.varType).packing;
             AssertFatal(n % packing == 0,
                         ShowValue(m),
                         ShowValue(n),
@@ -1205,11 +1106,10 @@ namespace rocRoller
                 .map(MemoryInstructions::addExtraDst(ldsAllocation));
         }
 
-        Generator<Instruction> LoadStoreTileGenerator::loadMacroTileWAVELDS(int                tag,
-                                                                            LoadLDSTile const& load,
-                                                                            Transformer coords)
+        LoadStoreTileGenerator::LoadStoreTileInfo
+            LoadStoreTileGenerator::loadMacroTileWAVELDSInfo(int tag, LoadLDSTile const& load)
         {
-            auto [ldsTag, lds]           = m_graph->getDimension<LDS>(tag);
+            auto [ldsTag, _lds]          = m_graph->getDimension<LDS>(tag);
             auto [waveTileTag, waveTile] = m_graph->getDimension<WaveTile>(tag);
 
             rocRoller::Log::getLogger()->debug("KernelGraph::LoadStoreTileGenerator::"
@@ -1217,18 +1117,25 @@ namespace rocRoller
                                                tag,
                                                ldsTag,
                                                waveTileTag);
-            co_yield_(Instruction::Comment(concatenate(
-                "GEN: loadMacroTileWAVELDS OP ", tag, " LDS ", ldsTag, " WaveTile ", waveTileTag)));
+
+            LoadStoreTileInfo result;
+            result.comments = {concatenate(
+                "GEN: loadMacroTileWAVELDS OP ", tag, " LDS ", ldsTag, " WaveTile ", waveTileTag)};
 
             ldsTag = only(m_graph->coordinates.getOutputNodeIndices(ldsTag, CT::isEdge<View>))
                          .value_or(ldsTag);
             // Find the LDS allocation that contains the tile and store
             // the offset of the beginning of the allocation into ldsOffset.
-            auto ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
+            if(m_context && m_context->registerTagManager()->hasRegister(ldsTag))
+            {
+                auto ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
+                result.offset
+                    = Register::Value::Literal(ldsAllocation->getLDSAllocation()->offset());
+            }
 
-            auto ldsOffset = Register::Value::Literal(ldsAllocation->getLDSAllocation()->offset());
+            uint numVGPRBlockSets = GetVGPRBlockSetDimSize(*m_graph, tag).value_or(1);
 
-            uint numElements       = waveTile.sizes[0] * waveTile.sizes[1];
+            uint numElements       = waveTile.sizes[0] * waveTile.sizes[1] / numVGPRBlockSets;
             auto [_, lane]         = m_graph->getDimension<Lane>(tag);
             auto activeLanesInWave = getUnsignedInt(evaluate(lane.size));
 
@@ -1241,22 +1148,22 @@ namespace rocRoller
             uint numVgpr = numElements / (activeLanesInWave * packing);
             AssertFatal(numVgpr > 0, "Invalid load dimensions.");
 
-            LoadStoreTileInfo info{.tag              = tag,
-                                   .kind             = MemoryInstructions::MemoryKind::Local,
-                                   .m                = 1,
-                                   .n                = numVgpr,
-                                   .data             = nullptr,
-                                   .varType          = load.varType,
-                                   .offset           = ldsOffset,
-                                   .isTransposedTile = load.isTransposedTile};
-            co_yield moveTile<MemoryInstructions::MemoryDirection::Load>(info, coords)
-                .map(MemoryInstructions::addExtraSrc(ldsAllocation));
+            result.tag                  = tag;
+            result.kind                 = MemoryInstructions::MemoryKind::Local;
+            result.m                    = numVGPRBlockSets;
+            result.n                    = numVgpr;
+            result.data                 = nullptr;
+            result.varType              = load.varType;
+            result.isTransposedTile     = load.isTransposedTile;
+            result.isMacroTileRowStride = numVGPRBlockSets > 1;
+            return result;
         }
 
         Generator<Instruction> LoadStoreTileGenerator::loadMacroTileWAVE(int              tag,
                                                                          LoadTiled const& load,
                                                                          Transformer      coords)
         {
+            auto [macTileTag, macTile]   = m_graph->getDimension<MacroTile>(tag);
             auto [waveTileTag, waveTile] = m_graph->getDimension<WaveTile>(tag);
 
             rocRoller::Log::getLogger()->debug(
@@ -1280,8 +1187,14 @@ namespace rocRoller
             uint numVgpr = numElements / (activeLanesInWave * packing);
             AssertFatal(numVgpr > 0, "Invalid load dimensions.");
 
+            auto memoryKind = MemoryInstructions::MemoryKind::Buffer;
+            if(macTile.memoryType == MemoryType::WAVE_FROM_GLOBAL)
+            {
+                memoryKind = MemoryInstructions::MemoryKind::Global;
+            }
+
             LoadStoreTileInfo info{.tag     = tag,
-                                   .kind    = MemoryInstructions::MemoryKind::Buffer,
+                                   .kind    = memoryKind,
                                    .m       = 1,
                                    .n       = numVgpr,
                                    .data    = nullptr,
@@ -1353,6 +1266,7 @@ namespace rocRoller
                 break;
             case MemoryType::WAVE:
             case MemoryType::WAVE_SWIZZLE:
+            case MemoryType::WAVE_FROM_GLOBAL:
             {
                 switch(macTile.layoutType)
                 {
@@ -1364,37 +1278,37 @@ namespace rocRoller
                     co_yield loadMacroTileWAVECIACCUM(tag, load, coords);
                     break;
                 default:
-                    Throw<FatalError>("Layout type not supported yet for LoadTiled.");
+                    Throw<FatalError>(ShowValue(macTile.layoutType),
+                                      " Layout type not supported yet for LoadTiled.");
                 }
             }
             break;
             default:
-                Throw<FatalError>("Tile affinity type not supported yet for LoadTiled.");
+                Throw<FatalError>(ShowValue(macTile.memoryType),
+                                  " Tile affinity type not supported yet for LoadTiled.");
             }
         }
 
-        Generator<Instruction> LoadStoreTileGenerator::genLoadLDSTile(int                tag,
-                                                                      LoadLDSTile const& load,
-                                                                      Transformer        coords)
+        LoadStoreTileGenerator::LoadStoreTileInfo
+            LoadStoreTileGenerator::getLoadLDSTileInfo(int tag, LoadLDSTile const& load)
         {
-            auto [macTileTag, macTile] = m_graph->getDimension<MacroTile>(tag);
+            auto [_, macTile] = m_graph->getDimension<MacroTile>(tag);
 
             switch(macTile.memoryType)
             {
             case MemoryType::WAVE_SPLIT:
             case MemoryType::VGPR:
             case MemoryType::LDS:
-                co_yield loadMacroTileLDS(tag, load, coords);
-                break;
+                return loadMacroTileLDSInfo(tag, load);
             case MemoryType::WAVE:
             case MemoryType::WAVE_SWIZZLE:
+            case MemoryType::WAVE_FROM_GLOBAL:
             {
                 switch(macTile.layoutType)
                 {
                 case LayoutType::MATRIX_A:
                 case LayoutType::MATRIX_B:
-                    co_yield loadMacroTileWAVELDS(tag, load, coords);
-                    break;
+                    return loadMacroTileWAVELDSInfo(tag, load);
                 default:
                     Throw<FatalError>("Layout type not supported yet for LoadLDSTile.");
                 }
@@ -1405,17 +1319,79 @@ namespace rocRoller
             }
         }
 
+        Generator<Instruction> LoadStoreTileGenerator::genLoadLDSTile(int                tag,
+                                                                      LoadLDSTile const& load,
+                                                                      Transformer        coords)
+        {
+            auto info = getLoadLDSTileInfo(tag, load);
+
+            for(auto const& comment : info.comments)
+                co_yield Instruction::Comment(comment);
+
+            auto modelledAddresses = m_graph->modelledAddresses.find(tag);
+            auto applyAddresses    = [&](Instruction inst) {
+                if(modelledAddresses != m_graph->modelledAddresses.end())
+                {
+                    inst.setModelledAddresses(modelledAddresses->second);
+                    if(GPUInstructionInfo::isLDS(inst.getOpCode()))
+                        inst.addComment(fmt::format("Modelled addresses (normalized): {}",
+                                                    modelledAddresses->second));
+                }
+                return inst;
+            };
+
+            auto [ldsTag, _lds] = m_graph->getDimension<LDS>(tag);
+            ldsTag = only(m_graph->coordinates.getOutputNodeIndices(ldsTag, CT::isEdge<View>))
+                         .value_or(ldsTag);
+
+            if(m_context && m_context->registerTagManager()->hasRegister(ldsTag))
+            {
+                auto ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
+                co_yield moveTile<MemoryInstructions::MemoryDirection::Load>(info, coords)
+                    .map(MemoryInstructions::addExtraSrc(ldsAllocation))
+                    .map(applyAddresses);
+            }
+            else
+                co_yield moveTile<MemoryInstructions::MemoryDirection::Load>(info, coords)
+                    .map(applyAddresses);
+        }
+
         Generator<Instruction> LoadStoreTileGenerator::genLoadTileDirect2LDS(
             int tag, LoadTileDirect2LDS const& load, Transformer coords)
         {
             co_yield loadMacroTileDirect2LDS(tag, load, coords);
         }
 
-        Generator<Instruction> LoadStoreTileGenerator::storeMacroTileLDS(int                 tag,
-                                                                         StoreLDSTile const& store,
-                                                                         Transformer         coords)
+        LoadStoreTileGenerator::LoadStoreTileInfo
+            LoadStoreTileGenerator::getStoreLDSTileInfo(int tag, StoreLDSTile const& store)
         {
-            auto [ldsTag, lds]   = m_graph->getDimension<LDS>(tag);
+            auto [_, macTile] = m_graph->getDimension<MacroTile>(tag);
+
+            switch(macTile.memoryType)
+            {
+            case MemoryType::VGPR:
+            case MemoryType::LDS:
+                return storeMacroTileLDSInfo(tag, store);
+            case MemoryType::WAVE:
+            {
+                switch(macTile.layoutType)
+                {
+                case LayoutType::MATRIX_ACCUMULATOR:
+                    return storeMacroTileWAVELDSInfo(tag, store);
+                default:
+                    Throw<FatalError>("Layout type not supported yet for StoreLDSTile.");
+                }
+            }
+            break;
+            default:
+                Throw<FatalError>("Tile affinity type not supported yet for StoreLDSTile.");
+            }
+        }
+
+        LoadStoreTileGenerator::LoadStoreTileInfo
+            LoadStoreTileGenerator::storeMacroTileLDSInfo(int tag, StoreLDSTile const& store)
+        {
+            auto [ldsTag, _]     = m_graph->getDimension<LDS>(tag);
             auto [tileTag, tile] = m_graph->getDimension<MacroTile>(tag);
 
             rocRoller::Log::getLogger()->debug(
@@ -1427,33 +1403,37 @@ namespace rocRoller
                 toString(tile.layoutType),
                 toString(tile.memoryType),
                 tile.paddingBytes());
-            co_yield Instruction::Comment(concatenate(
-                "GEN: storeMacroTileLDS OP ", tag, " LDS ", ldsTag, " MacroTile ", tileTag));
+            auto infoComment = concatenate(
+                "GEN: storeMacroTileLDS OP ", tag, " LDS ", ldsTag, " MacroTile ", tileTag);
 
             auto packing = DataTypeInfo::Get(store.varType).packing;
 
             // Temporary register(s) that is used to copy the data from global memory to
             // local memory.
-            auto vgpr    = m_context->registerTagManager()->getRegister(tileTag);
             auto varType = store.varType;
 
-            auto numElements  = product(tile.subTileSizes) * m_workgroupSizeTotal;
             auto paddingBytes = tile.paddingBytes();
             // Allocate LDS memory, and store the offset of the beginning of the allocation
             // into ldsOffset.
-            Register::ValuePtr ldsAllocation;
-            if(!m_context->registerTagManager()->hasRegister(ldsTag))
-            {
-                ldsAllocation = Register::Value::AllocateLDS(
-                    m_context, varType, numElements / packing, /*alignment*/ 4, paddingBytes);
-                m_context->registerTagManager()->addRegister(ldsTag, ldsAllocation);
-            }
-            else
-            {
-                ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
-            }
+            Register::ValuePtr ldsAllocation = nullptr;
+            Register::ValuePtr ldsOffset     = nullptr;
 
-            auto ldsOffset = Register::Value::Literal(ldsAllocation->getLDSAllocation()->offset());
+            if(m_context)
+            {
+                if(!m_context->registerTagManager()->hasRegister(ldsTag))
+                {
+                    auto numElements = GetNumLDSElements(*m_graph, ldsTag);
+                    ldsAllocation    = Register::Value::AllocateLDS(
+                        m_context, varType, numElements / packing, /*alignment*/ 4, paddingBytes);
+                    m_context->registerTagManager()->addRegister(ldsTag, ldsAllocation);
+                }
+                else
+                {
+                    ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
+                }
+
+                ldsOffset = Register::Value::Literal(ldsAllocation->getLDSAllocation()->offset());
+            }
 
             auto [elemXTag, elemX] = m_graph->getDimension<ElementNumber>(tag, 0);
             auto [elemYTag, elemY] = m_graph->getDimension<ElementNumber>(tag, 1);
@@ -1463,16 +1443,90 @@ namespace rocRoller
             AssertFatal(n % packing == 0, ShowValue(n), ShowValue(packing));
             n /= packing;
 
-            LoadStoreTileInfo info{.tag              = tag,
-                                   .kind             = MemoryInstructions::MemoryKind::Local,
-                                   .m                = m,
-                                   .n                = n,
-                                   .data             = vgpr,
-                                   .varType          = varType,
-                                   .offset           = ldsOffset,
-                                   .isTransposedTile = false,
-                                   .isPadded         = paddingBytes > 0};
-            co_yield moveTile<MemoryInstructions::MemoryDirection::Store>(info, coords)
+            LoadStoreTileInfo info{
+                .tag     = tag,
+                .kind    = MemoryInstructions::MemoryKind::Local,
+                .m       = m,
+                .n       = n,
+                .data    = (m_context && m_context->registerTagManager()->hasRegister(tileTag))
+                               ? m_context->registerTagManager()->getRegister(tileTag)
+                               : nullptr,
+                .varType = varType,
+                .offset  = ldsOffset,
+                .isTransposedTile = false,
+                .isPadded         = paddingBytes > 0};
+            info.comments = {infoComment};
+            return info;
+        }
+
+        Generator<Instruction> LoadStoreTileGenerator::genLoadTiledTDMToLDS(
+            int tag, LoadTiledTDMToLDS const& load, Transformer coords)
+        {
+            auto [ldsTag, lds]   = m_graph->getDimension<LDS>(tag);
+            auto [tileTag, tile] = m_graph->getDimension<MacroTile>(tag);
+
+            rocRoller::Log::getLogger()->debug("KernelGraph::LoadStoreTileGenerator::"
+                                               "genLoadTDMToLDS: OP {} LDS {} MacroTile {}",
+                                               tag,
+                                               ldsTag,
+                                               tileTag);
+            co_yield Instruction::Comment(concatenate(
+                "GEN: LoadTiledTDMToLDS OP ", tag, " LDS ", ldsTag, " MacroTile ", tileTag));
+
+            auto numElements = product(tile.subTileSizes) * m_workgroupSizeTotal;
+
+            // Allocate LDS memory
+            Register::ValuePtr ldsAllocation;
+            if(!m_context->registerTagManager()->hasRegister(ldsTag))
+            {
+                ldsAllocation = Register::Value::AllocateLDS(m_context, load.varType, numElements);
+                m_context->registerTagManager()->addRegister(ldsTag, ldsAllocation);
+            }
+            else
+            {
+                ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
+            }
+
+            // base offset of the allocation
+            const auto ldsOffset
+                = Register::Value::Literal(ldsAllocation->getLDSAllocation()->offset());
+
+            auto [elemXTag, elemX]           = m_graph->getDimension<ElementNumber>(tag, 0);
+            const auto  swapTileDimensions   = isSwappedLayout(*m_graph, elemXTag, elemX);
+            const auto& workgroupSizeSlowDim = m_context->kernel()->workgroupSize()[0];
+            const auto  wavefrontSize        = m_context->targetArchitecture().GetCapability(
+                GPUCapability::DefaultWavefrontSize);
+            const auto wavesPerWorkgroup = workgroupSizeSlowDim / wavefrontSize;
+
+            const uint64_t m
+                = (swapTileDimensions ? tile.sizes[1] : tile.sizes[0]) / wavesPerWorkgroup;
+            const uint64_t n = (swapTileDimensions ? tile.sizes[0] : tile.sizes[1]);
+
+            auto toBytes = [&](auto dimSize) -> uint32_t {
+                const auto bitsInAByte   = 8;
+                const auto elementBits   = DataTypeInfo::Get(load.varType).elementBits;
+                const auto dimSizeInBits = dimSize * elementBits;
+
+                AssertFatal(dimSizeInBits % bitsInAByte == 0,
+                            "Dimension size in bytes must be an integer.",
+                            ShowValue(dimSize),
+                            ShowValue(elementBits),
+                            ShowValue(dimSizeInBits));
+                return dimSizeInBits / bitsInAByte;
+            };
+
+            auto tdmTag  = m_graph->mapper.get<TDM>(tag);
+            auto tdmRegs = m_context->registerTagManager()->getRegister(tdmTag);
+
+            LoadStoreTileInfo info{.tag     = tag,
+                                   .kind    = MemoryInstructions::MemoryKind::TDMToLDS,
+                                   .m       = m,
+                                   .n       = toBytes(n),
+                                   .data    = ldsOffset,
+                                   .varType = load.varType,
+                                   .tdmDesc = tdmRegs};
+
+            co_yield moveTile<MemoryInstructions::MemoryDirection::Load>(info, coords)
                 .map(MemoryInstructions::addExtraDst(ldsAllocation));
         }
 
@@ -1516,12 +1570,11 @@ namespace rocRoller
             co_yield moveTile<MemoryInstructions::MemoryDirection::Store>(info, coords);
         }
 
-        Generator<Instruction> LoadStoreTileGenerator::storeMacroTileWAVELDS(
-            int tag, StoreLDSTile const& store, Transformer coords)
+        LoadStoreTileGenerator::LoadStoreTileInfo
+            LoadStoreTileGenerator::storeMacroTileWAVELDSInfo(int tag, StoreLDSTile const& store)
         {
-            auto [ldsTag, lds]           = m_graph->getDimension<LDS>(tag);
-            auto [macTileTag, macTile]   = m_graph->getDimension<MacroTile>(tag);
-            auto macrotileNumElements    = product(macTile.sizes);
+            auto [ldsTag, _lds]          = m_graph->getDimension<LDS>(tag);
+            auto [macTileTag, _macTile]  = m_graph->getDimension<MacroTile>(tag);
             auto [waveTileTag, waveTile] = m_graph->getDimension<WaveTile>(tag);
             uint waveTileNumElements     = waveTile.sizes[0] * waveTile.sizes[1];
             auto varType                 = store.varType;
@@ -1533,32 +1586,41 @@ namespace rocRoller
                 ldsTag,
                 macTileTag,
                 waveTileTag);
-            co_yield Instruction::Comment(concatenate("GEN: storeMacroTileWAVELDS OP ",
-                                                      tag,
-                                                      " LDS ",
-                                                      ldsTag,
-                                                      " MacroTile ",
-                                                      macTileTag,
-                                                      " WaveTile ",
-                                                      waveTileTag));
+            auto infoComment = concatenate("GEN: storeMacroTileWAVELDS OP ",
+                                           tag,
+                                           " LDS ",
+                                           ldsTag,
+                                           " MacroTile ",
+                                           macTileTag,
+                                           " WaveTile ",
+                                           waveTileTag);
 
             auto packing = DataTypeInfo::Get(store.varType).packing;
 
             // Allocate LDS memory, and store the offset of the beginning of the allocation
             // into ldsOffset.
-            Register::ValuePtr ldsAllocation;
-            if(!m_context->registerTagManager()->hasRegister(ldsTag))
-            {
-                ldsAllocation = Register::Value::AllocateLDS(
-                    m_context, varType, macrotileNumElements / packing);
-                m_context->registerTagManager()->addRegister(ldsTag, ldsAllocation);
-            }
-            else
-            {
-                ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
-            }
+            Register::ValuePtr ldsAllocation = nullptr;
+            Register::ValuePtr ldsOffset     = nullptr;
+            Register::ValuePtr agpr          = nullptr;
 
-            auto ldsOffset = Register::Value::Literal(ldsAllocation->getLDSAllocation()->offset());
+            if(m_context)
+            {
+                if(!m_context->registerTagManager()->hasRegister(ldsTag))
+                {
+                    auto numElements = GetNumLDSElements(*m_graph, ldsTag);
+
+                    ldsAllocation
+                        = Register::Value::AllocateLDS(m_context, varType, numElements / packing);
+                    m_context->registerTagManager()->addRegister(ldsTag, ldsAllocation);
+                }
+                else
+                {
+                    ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
+                }
+
+                ldsOffset = Register::Value::Literal(ldsAllocation->getLDSAllocation()->offset());
+                agpr      = m_context->registerTagManager()->getRegister(macTileTag);
+            }
 
             auto [_, lane]         = m_graph->getDimension<Lane>(tag);
             auto activeLanesInWave = getUnsignedInt(evaluate(lane.size));
@@ -1569,23 +1631,33 @@ namespace rocRoller
                         ShowValue(packing),
                         ShowValue(activeLanesInWave * packing));
 
-            co_yield Instruction::Comment(concatenate(ShowValue(waveTile),
-                                                      ShowValue(waveTileNumElements),
-                                                      ShowValue(activeLanesInWave),
-                                                      ShowValue(packing),
-                                                      ShowValue(activeLanesInWave * packing),
-                                                      ShowValue(store.varType)));
+            LoadStoreTileInfo info{.tag     = tag,
+                                   .kind    = MemoryInstructions::MemoryKind::Local,
+                                   .m       = 0,
+                                   .n       = 0,
+                                   .data    = agpr,
+                                   .varType = varType,
+                                   .offset  = ldsOffset};
+            info.comments = {infoComment};
+
+            if(m_context)
+            {
+                info.comments.push_back(concatenate(ShowValue(waveTile),
+                                                    ShowValue(waveTileNumElements),
+                                                    ShowValue(activeLanesInWave),
+                                                    ShowValue(packing),
+                                                    ShowValue(activeLanesInWave * packing),
+                                                    ShowValue(store.varType)));
+
+                info.comments.push_back(concatenate(ShowValue(agpr->description()),
+                                                    ShowValue(waveTile),
+                                                    ShowValue(waveTileNumElements),
+                                                    ShowValue(activeLanesInWave),
+                                                    ShowValue(packing),
+                                                    ShowValue(activeLanesInWave * packing)));
+            }
 
             uint numVgpr = waveTileNumElements / activeLanesInWave;
-
-            auto agpr = m_context->registerTagManager()->getRegister(macTileTag);
-
-            co_yield Instruction::Comment(concatenate(ShowValue(agpr->description()),
-                                                      ShowValue(waveTile),
-                                                      ShowValue(waveTileNumElements),
-                                                      ShowValue(activeLanesInWave),
-                                                      ShowValue(packing),
-                                                      ShowValue(activeLanesInWave * packing)));
 
             auto [vgprBlockNumberTag, vgprBlockNumber]
                 = m_graph->getDimension<VGPRBlockNumber>(tag, 0);
@@ -1604,15 +1676,9 @@ namespace rocRoller
             AssertFatal(n % packing == 0, ShowValue(n), ShowValue(packing));
             n /= packing;
 
-            LoadStoreTileInfo info{.tag     = tag,
-                                   .kind    = MemoryInstructions::MemoryKind::Local,
-                                   .m       = m,
-                                   .n       = n,
-                                   .data    = agpr,
-                                   .varType = varType,
-                                   .offset  = ldsOffset};
-            co_yield moveTile<MemoryInstructions::MemoryDirection::Store>(info, coords)
-                .map(MemoryInstructions::addExtraDst(ldsAllocation));
+            info.m = m;
+            info.n = n;
+            return info;
         }
 
         Generator<Instruction> LoadStoreTileGenerator::storeMacroTileWAVE(int               tag,
@@ -1700,6 +1766,7 @@ namespace rocRoller
                 co_yield storeMacroTileVGPR(tag, store, coords);
                 break;
             case MemoryType::WAVE:
+            case MemoryType::WAVE_SWIZZLE:
                 co_yield storeMacroTileWAVE(tag, store, coords);
                 break;
             default:
@@ -1711,29 +1778,35 @@ namespace rocRoller
                                                                        StoreLDSTile const& store,
                                                                        Transformer         coords)
         {
-            auto [macTileTag, macTile] = m_graph->getDimension<MacroTile>(tag);
+            auto info = getStoreLDSTileInfo(tag, store);
 
-            switch(macTile.memoryType)
-            {
-            case MemoryType::VGPR:
-            case MemoryType::LDS:
-                co_yield storeMacroTileLDS(tag, store, coords);
-                break;
-            case MemoryType::WAVE:
-            {
-                switch(macTile.layoutType)
+            for(auto const& comment : info.comments)
+                co_yield Instruction::Comment(comment);
+
+            auto modelledAddresses = m_graph->modelledAddresses.find(tag);
+            auto applyAddresses    = [&](Instruction inst) {
+                if(modelledAddresses != m_graph->modelledAddresses.end())
                 {
-                case LayoutType::MATRIX_ACCUMULATOR:
-                    co_yield storeMacroTileWAVELDS(tag, store, coords);
-                    break;
-                default:
-                    Throw<FatalError>("Layout type not supported yet for StoreLDSTile.");
+                    inst.setModelledAddresses(modelledAddresses->second);
+                    if(GPUInstructionInfo::isLDS(inst.getOpCode()))
+                        inst.addComment(fmt::format("Modelled addresses (normalized): {}",
+                                                    modelledAddresses->second));
                 }
+                return inst;
+            };
+
+            auto [ldsTag, _lds] = m_graph->getDimension<LDS>(tag);
+
+            if(m_context && m_context->registerTagManager()->hasRegister(ldsTag))
+            {
+                auto ldsAllocation = m_context->registerTagManager()->getRegister(ldsTag);
+                co_yield moveTile<MemoryInstructions::MemoryDirection::Store>(info, coords)
+                    .map(MemoryInstructions::addExtraDst(ldsAllocation))
+                    .map(applyAddresses);
             }
-            break;
-            default:
-                Throw<FatalError>("Tile affinity type not supported yet for StoreLDSTile.");
-            }
+            else
+                co_yield moveTile<MemoryInstructions::MemoryDirection::Store>(info, coords)
+                    .map(applyAddresses);
         }
     }
 }

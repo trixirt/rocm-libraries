@@ -30,9 +30,9 @@ environment, hipCUB uses the rocPRIM library as the backend.
 Optional:
 
 * [GoogleTest](https://github.com/google/googletest)
-* [Google Benchmark](https://github.com/google/benchmark)
-
-GoogleTest and Google Benchmark are automatically downloaded and built by the CMake script.
+  * This is automatically downloaded and built by the CMake script
+* [AMD SMI](https://github.com/ROCm/amdsmi)
+  * Required only for benchmarks. Building benchmarks is off by default.
 
 ## Build and install
 
@@ -69,7 +69,7 @@ mkdir build; cd build
 #   BUILD_TEST                   - OFF by default,
 #   BUILD_BENCHMARK              - OFF by default.
 #   ROCPRIM_FETCH_METHOD         - One of PACKAGE (default), DOWNLOAD, and MONOREPO. See below for a description of each.
-#   EXTERNAL_DEPS_FORCE_DOWNLOAD - OFF by default, forces download for non-ROCm dependencies (eg. Google Test / Benchmark).
+#   EXTERNAL_DEPS_FORCE_DOWNLOAD - OFF by default, forces download for non-ROCm dependencies (e.g., Google Test).
 #   DOWNLOAD_CUB                 - OFF by default, (Nvidia CUB backend only) forces download of CUB instead of searching for an installed package.
 #   BUILD_OFFLOAD_COMPRESS       - ON by default, compresses device code to reduce the size of the generated binary.
 #   BUILD_EXAMPLE                - OFF by default, builds examples.
@@ -82,12 +82,13 @@ mkdir build; cd build
 # Set C++ compiler to HIP-aware clang. You can do it by adding 'CXX=<path-to-compiler>'
 # before 'cmake' or setting cmake option 'CMAKE_CXX_COMPILER' to path to the compiler.
 #
+# The package and install scripts require Make, but otherwise passing -GNinja is recommended for faster building.
 [CXX=hipcc] cmake ../. # or cmake-gui ../.
 # or to build benchmarks
 cmake -DBUILD_BENCHMARK=ON ../.
 
 # Build
-make -j4
+make -j4 # or `ninja`
 
 # Optionally, run tests if they're enabled.
 ctest --output-on-failure
@@ -189,26 +190,83 @@ static constexpr size_t seed_size = sizeof(seeds) / sizeof(seeds[0]);
 
 (3) Never modified this line.
 
+### Parallel testing using multiple GPUs
+
+hipCUB can make use of [CTest's resource allocation feature](https://cmake.org/cmake/help/latest/manual/ctest.1.html#resource-allocation) to distribute tests across multiple GPUs in
+a balanced way. This can decrease the amount of time required to run the full test suite.
+
+#### Auto resource spec generation
+
+An executable named `generate_resource_spec` will be built when you run `cmake -DBUILD_TEST=ON`. It can be used to generate the resource spec file, which describes the GPU resources available on your system:
+
+```shell
+# Go to hipCUB build directory
+cd projects/hipCUB; cd build
+
+# Invoke the executable with a name for the output json file
+./generate_resource_spec resources.json
+
+# Run tests in parallel with specified number of jobs
+ctest --resource-spec-file ./resources.json --parallel <number-of-jobs>
+```
+
+This will launch up to the specified number of jobs to run tests in parallel, while honoring the available GPU resources defined by the resource spec file and their allocation defined by the `RESOURCE_GROUPS` property on the tests.
+
+When using the `GPU_TEST_TARGETS` cmake option, test names are prefixed with the gfx ID of the device (eg. `gfx1100-hipcub.BasicTest`). This allows you
+run device-specific groups of tests with ctest's `-R` option (eg. to run all gfx1100 tests, you could use `ctest -j<num jobs> -R "gfx1100-.*"`).
+
+#### Manual
+
+Assuming you have two GPUs from the gfx900 family and they are the first devices enumerated by the
+system, you can specify `-D AMDGPU_TEST_TARGETS=gfx900` during configuration to specify that you
+want only one family to be tested. If you leave this var empty (default), all GPUs in the system
+are targeted. To specify that there are two GPUs that should be targeted, you must feed cmake a JSON file
+similar to the generated `resources.json` file. For example:
+
+```json
+{
+  "version": {
+    "major": 1,
+    "minor": 0
+  },
+  "local": [
+    {
+      "gfx900": [
+        {
+          "id": "0"
+        },
+        {
+          "id": "1"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Pass this file to CTest using the `--resource-spec-file` flag:
+
+```shell
+# Run tests on specified GPU family
+ctest --resource-spec-file <path-to-your-resources.json> --parallel <number-of-jobs>
+```
+
 ## Running benchmarks
+
+hipCUB uses [primbench](https://github.com/ROCm/rocm-libraries/tree/develop/shared/primbench) for benchmarking; see its [command-line options](https://github.com/ROCm/rocm-libraries/tree/develop/shared/primbench#command-line-options) for advanced usage.
 
 ```shell
 # Go to hipCUB build directory
 cd projects/hipcub; cd build
 
 # To run benchmark for warp functions:
-# Further option can be found using --help
-# [] Fields are optional
-./benchmark/benchmark_warp_<function_name> [--size <size>] [--trials <trials>]
+./benchmark/benchmark_warp_<function_name>
 
 # To run benchmark for block functions:
-# Further option can be found using --help
-# [] Fields are optional
-./benchmark/benchmark_block_<function_name> [--size <size>] [--trials <trials>]
+./benchmark/benchmark_block_<function_name>
 
 # To run benchmark for device functions:
-# Further option can be found using --help
-# [] Fields are optional
-./benchmark/benchmark_device_<function_name> [--size <size>] [--trials <trials>]
+./benchmark/benchmark_device_<function_name>
 ```
 
 ## Building the documentation locally

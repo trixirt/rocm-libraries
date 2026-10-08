@@ -84,10 +84,11 @@ For more information, see :doc:`Use hipBLASLt offline tuning <../how-to/how-to-u
       - | Integer value in bytes (default: 128 * 1024 * 1024)
         | Limits workspace size for solution selection
 
-Stream-K configuration
-======================
+Origami with Stream-K configuration
+===================================
 
-The Stream-K configuration environment variables for hipBLASLt are collected in the following table.
+The Origami with Stream-K configuration environment variables for hipBLASLt are collected in the following table.
+These variables apply to all GEMMs in an application.
 For more information, see :doc:`Use Stream-K with hipBLASLt <../how-to/how-to-use-streamk>`.
 
 .. list-table::
@@ -100,14 +101,26 @@ For more information, see :doc:`Use Stream-K with hipBLASLt <../how-to/how-to-us
     * - | ``TENSILE_SOLUTION_SELECTION_METHOD``
         | Controls hipBLASLt kernel selection strategy for GEMM operations.
       - | 0: Default (standard tuned libraries, no Stream-K)
-        | 2: Stream-K (enables Stream-K library for consistent performance)
+        | 2: Origami with Stream-K (enables Origami solution selection for consistent performance)
         | This variable has no effect on the AMD Instinct™ MI350 series. Stream-K is always used.
-
 
     * - | ``TENSILE_STREAMK_DYNAMIC_GRID``
         | Controls Stream-K dynamic grid size selection behavior.
       - | 0: Disable dynamic grid (use all available compute units)
-        | 3: Default (automatically pick optimal workgroup count)
+        | 1: Only reduce compute units for small problems to the number of output tiles when ``num_tiles < CU count``
+        | 2: Also reduce compute units for large sizes to improve the data-parallel portion and reduce power
+        | 3: Analytically predict the best grid size by weighing the cost of the fix-up step and the cost of processing MACs 
+        | 4: The Stream-K algorithm behaves like data parallel (Launch WGs =  number of CUs)
+        | 5: The Stream-K algorithm uses the Origami ``select_best_grid_size`` function
+        | 6: Default (automatically pick the optimal workgroup count)
+
+    * - | ``TENSILE_GRIDBASED_KDTREE``
+        | Force-enables the k-d tree index on grid-based solution-selection tables, which are otherwise scanned linearly.
+        | Enable-only: it can switch the index on for tables that do not ask for it, but it can never switch it off. A table that declares ``UseKdTree: true`` in its library-logic file already uses the index with this variable unset, and no value of this variable changes that.
+        | Affects which kernel is selected, not the result it computes.
+      - | Unset or 0: Each grid-based table uses the ``UseKdTree`` value declared in its library-logic file. Tables that do not declare it are scanned linearly.
+        | Non-zero: Enable the index for every grid-based table, in addition to those already declaring ``UseKdTree: true``.
+        | To disable the index for a table that declares ``UseKdTree: true``, remove the key (or set it to ``false``) in that table's library-logic file and rebuild the device library. This cannot be done at runtime.
 
     * - | ``TENSILE_STREAMK_FIXED_GRID``
         | Overrides default grid size with specified number of workgroups for Stream-K kernels.
@@ -119,6 +132,8 @@ For more information, see :doc:`Use Stream-K with hipBLASLt <../how-to/how-to-us
       - | Integer value specifying maximum compute units
         | Example: 32 (limits GEMM kernels to 32 compute units)
         | Default: All available compute units
+
+.. _env-type_overrides:
 
 Type overrides
 ======================

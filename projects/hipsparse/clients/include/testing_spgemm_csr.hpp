@@ -1,5 +1,5 @@
 /* ************************************************************************
- * Copyright (C) 2020 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2020-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -36,7 +36,8 @@
 
 using namespace hipsparse_test;
 
-void testing_spgemm_csr_bad_arg(void)
+template <typename I, typename J, typename T>
+void testing_spgemm_csr_bad_arg(const Arguments& argus)
 {
 #if(!defined(CUDART_VERSION) || CUDART_VERSION >= 11000)
     int64_t              m         = 100;
@@ -331,16 +332,16 @@ void testing_spgemm_csr_bad_arg(void)
 }
 
 template <typename I, typename J, typename T>
-hipsparseStatus_t testing_spgemm_csr(Arguments argus)
+void testing_spgemm_csr(Arguments argus)
 {
 #if(!defined(CUDART_VERSION) || CUDART_VERSION >= 11000)
     J                    m        = argus.M;
     J                    k        = argus.K;
-    T                    h_alpha  = make_DataType<T>(argus.alpha);
+    T                    h_alpha  = argus.get_alpha<T>();
     hipsparseIndexBase_t idxBaseA = argus.baseA;
     hipsparseIndexBase_t idxBaseB = argus.baseB;
     hipsparseIndexBase_t idxBaseC = argus.baseC;
-    hipsparseSpGEMMAlg_t alg      = static_cast<hipsparseSpGEMMAlg_t>(argus.spgemm_alg);
+    hipsparseSpGEMMAlg_t alg      = argus.spgemm_alg;
     std::string          filename = argus.filename;
 
     T                    h_beta = make_DataType<T>(0);
@@ -368,12 +369,11 @@ hipsparseStatus_t testing_spgemm_csr(Arguments argus)
     srand(12345ULL);
 
     I nnz_A;
-    if(!generate_csr_matrix(
-           filename, m, k, nnz_A, hcsr_row_ptr_A, hcsr_col_ind_A, hcsr_val_A, idxBaseA))
-    {
-        fprintf(stderr, "Cannot open [read] %s\ncol", filename.c_str());
-        return HIPSPARSE_STATUS_INTERNAL_ERROR;
-    }
+    CHECK_GENERATE_MATRIX_ERROR(generate_csr_matrix(
+        filename, m, k, nnz_A, hcsr_row_ptr_A, hcsr_col_ind_A, hcsr_val_A, idxBaseA));
+
+    // Redefine sparse matrix values
+    hipsparseInit<T>(hcsr_val_A, hcsr_val_A.size(), 1);
 
     // For sparse matrix B, use the transpose of A
     J n     = m;
@@ -715,6 +715,84 @@ hipsparseStatus_t testing_spgemm_csr(Arguments argus)
     unit_check_general(1, nnz_C_gold, 1, hcsr_val_C_gold.data(), hcsr_val_C_1.data());
     unit_check_general(1, nnz_C_gold, 1, hcsr_val_C_gold.data(), hcsr_val_C_2.data());
 
+    // Assign completely new values to A (keeping the same sparsity pattern) and
+    // recompute C = alpha * A * B by reusing the descriptor and external buffers
+    // with only hipsparseSpGEMM_compute + hipsparseSpGEMM_copy. This is the
+    // cuSPARSE reuse workflow: no work estimation, no nnz query, and no
+    // hipsparseCsrSetPointers on the reuse (C1 already holds its output pointers).
+    //
+    // The bug in issue #8878 left C untouched (a no-op reuse: compute left matC
+    // pointing at the internal scratch buffers, so copy read those as its
+    // destination and copied scratch onto itself). The naive fix in PR #8913
+    // instead broke the first compute pass with HIPSPARSE_STATUS_INVALID_VALUE.
+    // The reuse now works because compute runs the split symbolic + numeric
+    // rocsparse stages rather than the non-repeatable fused compute stage.
+    {
+        // Assign brand new values to A (pattern unchanged) and upload to device.
+        std::vector<T> hcsr_val_A_new(nnz_A);
+        hipsparseInit<T>(hcsr_val_A_new, nnz_A, 1);
+        CHECK_HIP_ERROR(
+            hipMemcpy(dcsr_val_A, hcsr_val_A_new.data(), sizeof(T) * nnz_A, hipMemcpyHostToDevice));
+
+        // Reuse compute + copy only on C1 (host pointer mode) with the existing
+        // buffers - matching how cuSPARSE recomputes with updated values.
+        CHECK_HIPSPARSE_ERROR(hipsparseSetPointerMode(handle, HIPSPARSE_POINTER_MODE_HOST));
+        CHECK_HIPSPARSE_ERROR(hipsparseSpGEMM_compute(handle,
+                                                      transA,
+                                                      transB,
+                                                      &h_alpha,
+                                                      A,
+                                                      B,
+                                                      &h_beta,
+                                                      C1,
+                                                      typeT,
+                                                      alg,
+                                                      descr,
+                                                      &bufferSize2,
+                                                      externalBuffer2));
+        CHECK_HIPSPARSE_ERROR(hipsparseSpGEMM_copy(
+            handle, transA, transB, &h_alpha, A, B, &h_beta, C1, typeT, alg, descr));
+
+        // Read the recomputed C back to host.
+        std::vector<T> hcsr_val_C_1_reuse(nnz_C_1);
+        CHECK_HIP_ERROR(hipMemcpy(
+            hcsr_val_C_1_reuse.data(), dcsr_val_C_1, sizeof(T) * nnz_C_1, hipMemcpyDeviceToHost));
+
+        // Host reference for the new A values. The sparsity pattern of C is
+        // unchanged (A and B keep their patterns), so the C row pointer computed
+        // for the first pass (hcsr_row_ptr_C_gold, produced by host_csrgemm2_nnz)
+        // still applies and must be reused here: host_csrgemm2 expects the C row
+        // pointer as an input describing where each row's entries are written.
+        std::vector<J> hcsr_col_ind_C_reuse_gold(nnz_C_gold);
+        std::vector<T> hcsr_val_C_reuse_gold(nnz_C_gold);
+        host_csrgemm2(m,
+                      n,
+                      k,
+                      &h_alpha,
+                      hcsr_row_ptr_A.data(),
+                      hcsr_col_ind_A.data(),
+                      hcsr_val_A_new.data(),
+                      hcsr_row_ptr_B.data(),
+                      hcsr_col_ind_B.data(),
+                      hcsr_val_B.data(),
+                      (const T*)nullptr,
+                      (const I*)nullptr,
+                      (const J*)nullptr,
+                      (const T*)nullptr,
+                      hcsr_row_ptr_C_gold.data(),
+                      hcsr_col_ind_C_reuse_gold.data(),
+                      hcsr_val_C_reuse_gold.data(),
+                      idxBaseA,
+                      idxBaseB,
+                      idxBaseC,
+                      HIPSPARSE_INDEX_BASE_ZERO);
+
+        // C must now reflect the new A values. A no-op reuse (issue #8878) would
+        // still hold the original product and fail this check.
+        unit_check_general(
+            1, nnz_C_gold, 1, hcsr_val_C_reuse_gold.data(), hcsr_val_C_1_reuse.data());
+    }
+
     // Free buffers
     CHECK_HIP_ERROR(hipFree(externalBuffer1));
     CHECK_HIP_ERROR(hipFree(externalBuffer2));
@@ -725,8 +803,6 @@ hipsparseStatus_t testing_spgemm_csr(Arguments argus)
     CHECK_HIPSPARSE_ERROR(hipsparseDestroySpMat(C1));
     CHECK_HIPSPARSE_ERROR(hipsparseDestroySpMat(C2));
 #endif
-
-    return HIPSPARSE_STATUS_SUCCESS;
 }
 
 #endif // TESTING_SPGEMM_CSR_HPP

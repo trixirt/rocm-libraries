@@ -51,7 +51,7 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
     argParser.add_argument("LogicPath", help="Path to LibraryLogic.yaml files.")
     argParser.add_argument("OutputPath", help="Where to write library files?")
     argParser.add_argument(
-        "RuntimeLanguage", help="Which runtime language?", choices=["OCL", "HIP", "HSA"]
+        "RuntimeLanguage", help="Which runtime language?", choices=["HIP", "HSA"]
     )
     argParser.add_argument(
         "--cxx-compiler",
@@ -76,7 +76,7 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
     argParser.add_argument(
         "--code-object-version",
         dest="CodeObjectVersion",
-        choices=["4", "5", "V4", "V5", "default"],
+        choices=["4", "5", "V4", "V5", "6", "V6", "default"],
         default="4",
         action="store",
     )
@@ -101,6 +101,13 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
         help="Include logic files in directories named 'Experimental'.",
     )
     argParser.add_argument(
+        "--enable-gemm-a2a-fusion",
+        dest="EnableGemmA2AFusion",
+        action="store_true",
+        default=False,
+        help="Include logic whose ProblemType enables fused GEMM + all-to-all.",
+    )
+    argParser.add_argument(
         "--no-enumerate", action="store_true", help="Do not run rocm_agent_enumerator."
     )
     argParser.add_argument("--version", help="Version string to embed into library file.")
@@ -115,10 +122,11 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
     argParser.add_argument(
         "--library-format",
         dest="LibraryFormat",
-        choices=["yaml", "msgpack"],
+        choices=["yaml", "msgpack", "msgpack-indexed"],
         action="store",
         default="msgpack",
-        help="select which library format to use",
+        help="select which library format to use; msgpack-indexed defers "
+             "per-solution deserialization to query time",
     )
     argParser.add_argument(
         "--jobs",
@@ -178,7 +186,7 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
         action="store_true",
         default=False,
         help="Do not remove the temporary build directory (may required hundreds of GBs of space)",
-    ),
+    )
     argParser.add_argument(
         "--logic-filter",
         dest="LogicFilter",
@@ -195,22 +203,16 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
         default=False,
         help="Disable assembly comments in generated assembly code"
     )
+    argParser.add_argument(
+        "--emit-mainloop-trace-marker",
+        dest="EmitMainloopTraceMarker",
+        action="store_true",
+        default=False,
+        help="Emit s_ttracedata mainloop iteration markers for SQTT/trace decoders "
+        "(subtile kernels only; adds 2 instructions per iteration)"
+    )
 
     args = argParser.parse_args()
-
-    # NOTE: The feature that allows predicate based tensilelite library builds
-    # via `--architecture=gfx950[id=XXXX]` is not fully supported until the
-    # tensilelite runtime lookup and selection for these predicates is complete.
-    # As a staged approach, the TensileCreateLibrary code to enable this feature
-    # is implemented, but will remain disabled until the work is complete.
-    predicatePattern = re.compile(r"\[(.*?)\]")
-    if predicatePattern.search(args.Architecture):
-        printExit(
-            "Predicate based tensilelite library builds are supported; however, since "
-            "the runtime lookup and selection of these libraries is incomplete, the "
-            "requested build is currently disabled. Please re-run using only the "
-            "architecture name without a predicate (`--architecture=gfx950`)."
-        )
 
     arguments = {}
     arguments["RuntimeLanguage"] = args.RuntimeLanguage
@@ -219,6 +221,7 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
     arguments["LazyLibraryLoading"] = args.LazyLibraryLoading
     arguments["EnableMarker"] = args.EnableMarker
     arguments["DisableAsmComments"] = args.DisableAsmComments
+    arguments["EmitMainloopTraceMarker"] = args.EmitMainloopTraceMarker
     if args.CmakeCxxCompiler:
         os.environ["CMAKE_CXX_COMPILER"] = args.CmakeCxxCompiler
     arguments["LogicFormat"] = args.LogicFormat
@@ -238,6 +241,7 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
     arguments["LogicFilter"] = args.LogicFilter
     arguments["OutputPath"] = args.OutputPath
     arguments["Experimental"] = args.Experimental
+    arguments["EnableGemmA2AFusion"] = args.EnableGemmA2AFusion
     arguments["GenSolTable"] = args.GenSolTable
 
     return arguments

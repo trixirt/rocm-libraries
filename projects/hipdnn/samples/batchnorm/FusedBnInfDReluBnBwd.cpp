@@ -2,25 +2,27 @@
 // SPDX-License-Identifier:  MIT
 
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <string>
 #include <unordered_map>
 
+#include <hipdnn_data_sdk/utilities/ShapeUtilities.hpp>
+#include <hipdnn_data_sdk/utilities/Tensor.hpp>
+#include <hipdnn_data_sdk/utilities/Workspace.hpp>
 #include <hipdnn_frontend.hpp>
-#include <hipdnn_sdk/test_utilities/CpuFpReferenceValidation.hpp>
-#include <hipdnn_sdk/test_utilities/TestTolerances.hpp>
-#include <hipdnn_sdk/test_utilities/cpu_graph_executor/CpuReferenceGraphExecutor.hpp>
-#include <hipdnn_sdk/utilities/ShapeUtilities.hpp>
-#include <hipdnn_sdk/utilities/Tensor.hpp>
-#include <hipdnn_sdk/utilities/Workspace.hpp>
+#include <hipdnn_test_sdk/utilities/CpuFpReferenceValidation.hpp>
+#include <hipdnn_test_sdk/utilities/TensorDiff.hpp>
+#include <hipdnn_test_sdk/utilities/TestTolerances.hpp>
+#include <hipdnn_test_sdk/utilities/cpu_graph_executor/CpuReferenceGraphExecutor.hpp>
 
 #include "../utils/Helpers.hpp"
 
 using namespace hipdnn_frontend;
-using namespace hipdnn_sdk;
+using namespace hipdnn_data_sdk;
 
 template <typename InputType, typename IntermediateType>
-void SampleRunner::operator()(const TensorLayout& layout)
+bool SampleRunner::operator()(const TensorLayout& layout)
 {
     auto inputType = getDataTypeEnumFromType<InputType>();
     auto intermediateType = getDataTypeEnumFromType<IntermediateType>();
@@ -29,15 +31,18 @@ void SampleRunner::operator()(const TensorLayout& layout)
               << inputType << " [" << layout << "]"
               << (config.cpuValidation ? " (with CPU validation)" : "") << "...\n";
 
-    int64_t n = 1; // Batch size
-    int64_t c = 3; // Channels
-    int64_t h = 14; // Height
-    int64_t w = 14; // Width
+    // Input dimensions
+    const int64_t n = config.dims.size() > 0 ? config.dims[0] : 1; // BATCH SIZE
+    const int64_t c = config.dims.size() > 1 ? config.dims[1] : 16; // CHANNELS (FEATURES)
+    const int64_t h = config.dims.size() > 2 ? config.dims[2] : 14; // HEIGHT (SPATIAL DIMENSION)
+    const int64_t w = config.dims.size() > 3 ? config.dims[3] : 14; // WIDTH (SPATIAL DIMENSION)
 
     auto graph = std::make_shared<graph::Graph>();
     graph->set_io_data_type(inputType)
         .set_intermediate_data_type(intermediateType)
         .set_compute_data_type(hipdnn_frontend::DataType::FLOAT);
+
+    setPreferredEngine(graph, config);
 
     // Input tensors
     auto x = createTensor({n, c, h, w}, inputType, layout);
@@ -56,16 +61,14 @@ void SampleRunner::operator()(const TensorLayout& layout)
     auto bnY
         = graph->batchnorm_inference(x, savedMean, savedInvVariance, scale, bias, bnInfAttributes);
     bnY->set_name("bn_y");
-    bnY->set_data_type(inputType);
 
     // Step 2: Activation Backward (ReLU backward)
     auto activBwdAttributes = graph::PointwiseAttributes();
     activBwdAttributes.set_name("activation_backward_node");
     activBwdAttributes.set_mode(hipdnn_frontend::PointwiseMode::RELU_BWD);
 
-    auto dxDrelu = graph->pointwise(bnY, dy, activBwdAttributes);
+    auto dxDrelu = graph->pointwise(dy, bnY, activBwdAttributes);
     dxDrelu->set_name("dx_drelu");
-    dxDrelu->set_data_type(inputType);
 
     // Step 3: Batchnorm Backward
     auto bnBwdAttributes = graph::BatchnormBackwardAttributes();
@@ -74,7 +77,6 @@ void SampleRunner::operator()(const TensorLayout& layout)
 
     auto [dx, dscale, dbias] = graph->batchnorm_backward(dxDrelu, x, scale, bnBwdAttributes);
     dx->set_name("dx");
-    dx->set_data_type(inputType);
     dx->set_output(true);
 
     dscale->set_name("dscale");
@@ -85,20 +87,8 @@ void SampleRunner::operator()(const TensorLayout& layout)
     dbias->set_data_type(intermediateType);
     dbias->set_output(true);
 
-    HIPDNN_FE_CHECK(graph->validate());
-    std::cout << "Graph validation successful.\n";
-
-    HIPDNN_FE_CHECK(graph->build_operation_graph(handle));
-    std::cout << "Operation graph build successful.\n";
-
-    HIPDNN_FE_CHECK(graph->create_execution_plans());
-    std::cout << "Execution plans created successfully.\n";
-
-    HIPDNN_FE_CHECK(graph->check_support());
-    std::cout << "Graph support check successful.\n";
-
-    HIPDNN_FE_CHECK(graph->build_plans());
-    std::cout << "Plans build successful.\n";
+    HIPDNN_FE_CHECK_SKIPPABLE(graph->build(handle));
+    std::cout << "Graph build successful.\n";
 
     // Create tensors for execution
     utilities::Tensor<InputType> xTensor(x->get_dim(), layout);
@@ -121,12 +111,8 @@ void SampleRunner::operator()(const TensorLayout& layout)
                                     static_cast<IntermediateType>(0.1f));
     savedMeanTensor.fillWithRandomValues(static_cast<IntermediateType>(-0.1f),
                                          static_cast<IntermediateType>(0.1f));
-
-    // Generate random variance values (must be positive)
-    // Note: Due to a bug in handling variance vrs inv_variance (https://github.com/ROCm/rocm-libraries/issues/2459)
-    //       this is being set as 1 for now.
-    savedInvVarTensor.fillWithRandomValues(static_cast<IntermediateType>(1.0f),
-                                           static_cast<IntermediateType>(1.0f));
+    savedInvVarTensor.fillWithRandomValues(static_cast<IntermediateType>(0.1f),
+                                           static_cast<IntermediateType>(2.0f));
 
     std::unordered_map<int64_t, void*> variantPack;
     variantPack[x->get_uid()] = xTensor.memory().deviceData();
@@ -139,9 +125,9 @@ void SampleRunner::operator()(const TensorLayout& layout)
     variantPack[dscale->get_uid()] = dscaleTensor.memory().deviceData();
     variantPack[dbias->get_uid()] = dbiasTensor.memory().deviceData();
 
-    int64_t workspaceSize;
+    int64_t workspaceSize = 0;
     HIPDNN_FE_CHECK(graph->get_workspace_size(workspaceSize));
-    utilities::Workspace workspace(static_cast<size_t>(workspaceSize));
+    const utilities::Workspace workspace(static_cast<size_t>(workspaceSize));
 
     HIPDNN_FE_CHECK(graph->execute(handle, variantPack, workspace.get()));
 
@@ -153,6 +139,8 @@ void SampleRunner::operator()(const TensorLayout& layout)
     auto dscaleHostPtr = dscaleTensor.memory().hostData();
     auto dbiasHostPtr = dbiasTensor.memory().hostData();
 
+    bool validationPassed = true;
+
     if(config.cpuValidation)
     {
         std::cout << "Running CPU reference validation using CpuReferenceGraphExecutor...\n";
@@ -163,72 +151,112 @@ void SampleRunner::operator()(const TensorLayout& layout)
         utilities::Tensor<IntermediateType> dbiasRefTensor(dbias->get_dim());
 
         // Build variant pack for CPU execution (using host pointers)
-        std::unordered_map<int64_t, void*> cpuVariantPack;
-        cpuVariantPack[x->get_uid()] = xTensor.memory().hostData();
-        cpuVariantPack[dy->get_uid()] = dyTensor.memory().hostData();
-        cpuVariantPack[scale->get_uid()] = scaleTensor.memory().hostData();
-        cpuVariantPack[bias->get_uid()] = biasTensor.memory().hostData();
-        cpuVariantPack[savedMean->get_uid()] = savedMeanTensor.memory().hostData();
-        cpuVariantPack[savedInvVariance->get_uid()] = savedInvVarTensor.memory().hostData();
-        cpuVariantPack[dx->get_uid()] = dxRefTensor.memory().hostData();
-        cpuVariantPack[dscale->get_uid()] = dscaleRefTensor.memory().hostData();
-        cpuVariantPack[dbias->get_uid()] = dbiasRefTensor.memory().hostData();
+        const std::unordered_map<int64_t, void*> cpuVariantPack{
+            {x->get_uid(), xTensor.memory().hostData()},
+            {dy->get_uid(), dyTensor.memory().hostData()},
+            {scale->get_uid(), scaleTensor.memory().hostData()},
+            {bias->get_uid(), biasTensor.memory().hostData()},
+            {savedMean->get_uid(), savedMeanTensor.memory().hostData()},
+            {savedInvVariance->get_uid(), savedInvVarTensor.memory().hostData()},
+            {dx->get_uid(), dxRefTensor.memory().hostData()},
+            {dscale->get_uid(), dscaleRefTensor.memory().hostData()},
+            {dbias->get_uid(), dbiasRefTensor.memory().hostData()}};
 
         // Execute on CPU using graph executor
-        auto serializedGraph = graph->buildFlatbufferOperationGraph();
-        test_utilities::CpuReferenceGraphExecutor cpuExecutor;
+        auto [serializedGraph, serErr] = graph->to_binary();
+        if(serErr.is_bad())
+        {
+            std::cerr << "Failed to serialize graph: " << serErr.get_message() << '\n';
+            return false;
+        }
+        hipdnn_test_sdk::utilities::CpuReferenceGraphExecutor cpuExecutor;
         cpuExecutor.execute(serializedGraph.data(), serializedGraph.size(), cpuVariantPack);
 
-        // Tolerance range is very high due to data-type mismatch & variance issues (https://github.com/ROCm/rocm-libraries/issues/2459).
-        const auto inputTol = 4e-1f;
+        // Tolerance range is high due to data-type mismatch between plugin and reference impl.
+        // This will be fixed in a follow-up.
+        // Issue is due to the reference not splitting the input / output datatypes.
+        const auto inputTol = 4e-2f;
 
-        auto dxValidator = test_utilities::CpuFpReferenceValidation<InputType>(
-            static_cast<InputType>(inputTol), static_cast<InputType>(inputTol));
-        auto dscaleDbiasValidator = test_utilities::CpuFpReferenceValidation<IntermediateType>(
-            static_cast<IntermediateType>(inputTol), static_cast<IntermediateType>(inputTol));
-
-        bool dxValid = dxValidator.allClose(dxRefTensor, dxTensor);
-        bool dscaleValid = dscaleDbiasValidator.allClose(dscaleRefTensor, dscaleTensor);
-        bool dbiasValid = dscaleDbiasValidator.allClose(dbiasRefTensor, dbiasTensor);
+        auto dxValidator
+            = hipdnn_test_sdk::utilities::CpuFpReferenceValidation<InputType>(inputTol, inputTol);
+        auto dscaleDbiasValidator
+            = hipdnn_test_sdk::utilities::CpuFpReferenceValidation<IntermediateType>(inputTol,
+                                                                                     inputTol);
 
         std::cout << "CPU reference validation:\n";
-        std::cout << "  dx: " << (dxValid ? "successful" : "failed") << "\n";
-        std::cout << "  dscale: " << (dscaleValid ? "successful" : "failed") << "\n";
-        std::cout << "  dbias: " << (dbiasValid ? "successful" : "failed") << "\n";
+        const bool dxValid = hipdnn_test_sdk::utilities::validateAndReport<InputType>(
+            std::cout, "dx", dxValidator, dxRefTensor, dxTensor, inputTol, inputTol);
+        const bool dscaleValid
+            = hipdnn_test_sdk::utilities::validateAndReport<IntermediateType>(std::cout,
+                                                                              "dscale",
+                                                                              dscaleDbiasValidator,
+                                                                              dscaleRefTensor,
+                                                                              dscaleTensor,
+                                                                              inputTol,
+                                                                              inputTol);
+        const bool dbiasValid
+            = hipdnn_test_sdk::utilities::validateAndReport<IntermediateType>(std::cout,
+                                                                              "dbias",
+                                                                              dscaleDbiasValidator,
+                                                                              dbiasRefTensor,
+                                                                              dbiasTensor,
+                                                                              inputTol,
+                                                                              inputTol);
+
+        validationPassed = dxValid && dscaleValid && dbiasValid;
     }
 
-    std::cout << "First 10 dx values: ";
-    for(int i = 0; i < 10; ++i)
+    auto printCount = std::min<int64_t>(10, n * c * h * w);
+    auto perChannelPrintCount = std::min<int64_t>(10, c);
+
+    std::cout << "First " << printCount << " dx values: ";
+    for(int64_t i = 0; i < printCount; ++i)
     {
         std::cout << static_cast<InputType>(dxHostPtr[i]) << " ";
     }
-    std::cout << "\nFirst 10 dscale values: ";
-    for(int i = 0; i < 10; ++i)
+    std::cout << "\nFirst " << perChannelPrintCount << " dscale values: ";
+    for(int64_t i = 0; i < perChannelPrintCount; ++i)
     {
         std::cout << static_cast<IntermediateType>(dscaleHostPtr[i]) << " ";
     }
-    std::cout << "\nFirst 10 dbias values: ";
-    for(int i = 0; i < 10; ++i)
+    std::cout << "\nFirst " << perChannelPrintCount << " dbias values: ";
+    for(int64_t i = 0; i < perChannelPrintCount; ++i)
     {
         std::cout << static_cast<IntermediateType>(dbiasHostPtr[i]) << " ";
     }
 
     std::cout << "\nFused BN Inference + Activation Backward + BN Backward graph execution "
               << "complete for " << inputType << ".\n\n";
+    return validationPassed;
 }
 
 int main(int argc, char* argv[])
 {
-    auto config = parseCommandLineArgs(argc, argv);
+    try
+    {
+        RETURN_SUCCESS_IF_NO_DEVICE();
 
-    initializeFrontendLogging();
+        auto config = parseCommandLineArgs(argc, argv);
 
-    hipdnnHandle_t handle;
-    HIPDNN_CHECK(hipdnnCreate(&handle));
+        auto [handle, handleError] = createHipdnnHandle();
+        HIPDNN_FE_CHECK(handleError);
 
-    run(SampleRunner{handle, config});
+        const bool allPassed = run(SampleRunner{*handle, config});
 
-    HIPDNN_CHECK(hipdnnDestroy(handle));
-    std::cout << "All fused BN Inference + Activation Backward + BN Backward runs completed.\n";
-    return 0;
+        if(allPassed)
+        {
+            std::cout
+                << "All fused BN Inference + Activation Backward + BN Backward runs completed "
+                << "successfully.\n";
+            return 0;
+        }
+        std::cout << "One or more fused BN Inference + Activation Backward + BN Backward runs "
+                  << "failed validation.\n";
+        return 1;
+    }
+    catch(const std::exception& e)
+    {
+        std::fprintf(stderr, "Unhandled exception: %s\n", e.what());
+        return 1;
+    }
 }

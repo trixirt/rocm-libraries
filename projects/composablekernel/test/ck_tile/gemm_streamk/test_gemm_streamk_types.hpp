@@ -1,127 +1,275 @@
-// Copyright © Advanced Micro Devices, Inc., or its affiliates.
-// SPDX-License-Identifier:  MIT
-
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// SPDX-License-Identifier: MIT
 #pragma once
 
 #include <tuple>
 #include <type_traits>
-
 #include "gtest/gtest.h"
-
 #include "ck_tile/host.hpp"
 #include "test_gemm_streamk_util.hpp"
 
-using F16  = ck_tile::half_t;
-using F32  = float;
-using BF16 = ck_tile::bf16_t;
 using F8   = ck_tile::fp8_t;
+using F16  = ck_tile::half_t;
+using BF16 = ck_tile::bf16_t;
 using BF8  = ck_tile::bf8_t;
+using F32  = float;
 
+// Layouts
 using Row = ck_tile::tensor_layout::gemm::RowMajor;
 using Col = ck_tile::tensor_layout::gemm::ColumnMajor;
 
+// Persistence
+using Persistent    = std::true_type;
+using NonPersistent = std::false_type;
+
+// Pipelines
 using Mem    = ck_tile::integral_constant<GemmPipelineType, GemmPipelineType::Mem>;
 using CompV3 = ck_tile::integral_constant<GemmPipelineType, GemmPipelineType::CompV3>;
 using CompV4 = ck_tile::integral_constant<GemmPipelineType, GemmPipelineType::CompV4>;
 
-using Persistent    = std::true_type;
-using NonPersistent = std::false_type;
+// Reduction Strategies
+using Atomic = ck_tile::integral_constant<ck_tile::StreamKReductionStrategy,
+                                          ck_tile::StreamKReductionStrategy::Atomic>;
+using Linear = ck_tile::integral_constant<ck_tile::StreamKReductionStrategy,
+                                          ck_tile::StreamKReductionStrategy::Linear>;
+using Tree   = ck_tile::integral_constant<ck_tile::StreamKReductionStrategy,
+                                          ck_tile::StreamKReductionStrategy::Tree>;
 
-using I1   = ck_tile::number<1>;
-using I2   = ck_tile::number<2>;
-using I4   = ck_tile::number<4>;
-using I8   = ck_tile::number<8>;
 using I16  = ck_tile::number<16>;
 using I32  = ck_tile::number<32>;
-using I64  = ck_tile::number<64>;
 using I128 = ck_tile::number<128>;
 using I256 = ck_tile::number<256>;
 
-template <typename ADataType,
-          typename BDataType,
-          typename AccDataType,
-          typename CDataType,
-          typename M_MacroTile,
-          typename N_MacroTile,
-          typename K_MacroTile,
-          typename M_Warps,
-          typename N_Warps,
-          typename K_Warps,
-          typename M_MmaTile,
-          typename N_MmaTile,
-          typename K_MmaTile,
-          typename PipelineType,
-          typename Persistent>
-struct Layouts
-{
-    // clang-format off
-    // Create all combinations of A, B, Acc, C layouts
-    //                                      ALayout, BLayout, CLayout, ADataType, BDataType, AccDataType, CDataType, M_MacroTile, N_MacroTile, K_MacroTile, M_Warps, N_Warps, K_Warps, M_MmaTile, N_MmaTile, K_MmaTile, PipelineType, Persistent
-    using RRR = ::testing::Types<std::tuple<    Row,     Row,     Row, ADataType, BDataType, AccDataType, CDataType, M_MacroTile, N_MacroTile, K_MacroTile, M_Warps, N_Warps, K_Warps, M_MmaTile, N_MmaTile, K_MmaTile, PipelineType, Persistent>>;
-    using RRC = ::testing::Types<std::tuple<    Row,     Row,     Col, ADataType, BDataType, AccDataType, CDataType, M_MacroTile, N_MacroTile, K_MacroTile, M_Warps, N_Warps, K_Warps, M_MmaTile, N_MmaTile, K_MmaTile, PipelineType, Persistent>>;
-    using RCR = ::testing::Types<std::tuple<    Row,     Col,     Row, ADataType, BDataType, AccDataType, CDataType, M_MacroTile, N_MacroTile, K_MacroTile, M_Warps, N_Warps, K_Warps, M_MmaTile, N_MmaTile, K_MmaTile, PipelineType, Persistent>>;
-    using RCC = ::testing::Types<std::tuple<    Row,     Col,     Col, ADataType, BDataType, AccDataType, CDataType, M_MacroTile, N_MacroTile, K_MacroTile, M_Warps, N_Warps, K_Warps, M_MmaTile, N_MmaTile, K_MmaTile, PipelineType, Persistent>>;
-    using CRR = ::testing::Types<std::tuple<    Col,     Row,     Row, ADataType, BDataType, AccDataType, CDataType, M_MacroTile, N_MacroTile, K_MacroTile, M_Warps, N_Warps, K_Warps, M_MmaTile, N_MmaTile, K_MmaTile, PipelineType, Persistent>>;
-    using CRC = ::testing::Types<std::tuple<    Col,     Row,     Col, ADataType, BDataType, AccDataType, CDataType, M_MacroTile, N_MacroTile, K_MacroTile, M_Warps, N_Warps, K_Warps, M_MmaTile, N_MmaTile, K_MmaTile, PipelineType, Persistent>>;
-    using CCR = ::testing::Types<std::tuple<    Col,     Col,     Row, ADataType, BDataType, AccDataType, CDataType, M_MacroTile, N_MacroTile, K_MacroTile, M_Warps, N_Warps, K_Warps, M_MmaTile, N_MmaTile, K_MmaTile, PipelineType, Persistent>>;
-    using CCC = ::testing::Types<std::tuple<    Col,     Col,     Col, ADataType, BDataType, AccDataType, CDataType, M_MacroTile, N_MacroTile, K_MacroTile, M_Warps, N_Warps, K_Warps, M_MmaTile, N_MmaTile, K_MmaTile, PipelineType, Persistent>>;
-    // clang-format on
-};
-
 // clang-format off
-// Here we use macros to generate a large number of parameter sets for different test configurations.
-// One parameter set is intended to be be implemented per .cpp file to keep the compile time down.
-// The naming convention is as follows:
-//        __________________________________________________    ____________________________________________________________________________________
-//       |                Parameter Name                    |  |                           Parameter Value Type                                     |
-// using F16_RRR_Mem_128x128x32_2x2x1_32x32x16_NonPersistent = F16Layouts<I128, I128, I32, I2,  I2,    I1,    I32, I32, I16, Mem, NonPersistent>::RRR;
-//        /   |     \         \      \      \       \               |       |     |    |    \     \     \      \     \    \    \         \          \
-//     DATA LAYOUT  PIPELINE  MACRO  WARPS   MMA    PERSISTENT    LAYOUT   MACRO MACRO MACRO WARPS WARPS WARPS MMA  MMA  MMA  PIPELINE  PERSISTENT   LAYOUT
-//     TYPE         TYPE      TILE   MxNxK   TILE   TYPE          CLASS    TILE  TILE  TILE  M     N     K     TILE TILE TILE TYPE      TYPE
-//                            MxNxK          MxNxK                         M      N    K                       M     N   K    
-// 
-// The example options for each field are:
-//  - DATA_TYPE: F16, BF16, F8, BF8
-//  - LAYOUT: RRR, RRC, RCR, RCC, CRR, CRC, CCR, CCC
-//  - PIPELINE_TYPE: Mem, CompV3, CompV4
-//  - M_MACRO_TILE: 128, 256, etc
-//  - N_MACRO_TILE: 128, 256, etc
-//  - K_MACRO_TILE: 32, 64, 128, etc
-//  - M_WARPS: 2, 4, 1
-//  - N_WARPS: 2, 1, 4
-//  - K_WARPS: 1
-//  - M_MMA_TILE: 32, 16
-//  - N_MMA_TILE: 32, 16
-//  - K_MMA_TILE: 16
-//  - PERSISTENT_TYPE: NonPersistent, Persistent
 
-// Macro to concatenate the parameter name
-// E.g. F16_RRR_Mem_128x128x32_2x2x1_32x32x16_NonPersistent
-#define CONCATENATE_PARAM_NAME(DATA_TYPE, LAYOUT, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) \
-    DATA_TYPE##_##LAYOUT##_##PIPELINE_TYPE##_##M_MACRO_TILE##x##N_MACRO_TILE##x##K_MACRO_TILE##_##M_WARPS##x##N_WARPS##x##K_WARPS##_##M_MMA_TILE##x##N_MMA_TILE##x##K_MMA_TILE##_##PERSISTENT
+// ========================== CompV3 Pipeline ==========================
 
-// Macro to get the parameter value type
-// E.g. F16Layouts<I128, I128, I32, I2, I2, I1, I32, I32, I16, PipelineType, Persistent>::RRR
-#define CONCATENATE_PARAM_VALUE(LAYOUTS_CLASS, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PIPELINE_TYPE, PERSISTENT, LAYOUT) \
-    LAYOUTS_CLASS<I##M_MACRO_TILE, I##N_MACRO_TILE, I##K_MACRO_TILE, I##M_WARPS, I##N_WARPS, I##K_WARPS, I##M_MMA_TILE, I##N_MMA_TILE, I##K_MMA_TILE, PIPELINE_TYPE, PERSISTENT>::LAYOUT
+// Atomics
+using KernelTypesStreamKFp16PersistentAtomicCompV3 = ::testing::Types<
+//                ALayout  BLayout  CLayout   ADataType  BDataType  AccDataType  CDataType  M_MacroTile  N_MacroTile  K_MacroTile  M_WaveTile  N_WaveTile  K_WaveTile  Persistent    Pipeline  ReductionStrategy
 
-// Macro to declare a single parameter set, consisting of a parameter name and value type
-#define DECLARE_PARAM(LAYOUTS_CLASS, DATA_TYPE, LAYOUT, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) \
-    using CONCATENATE_PARAM_NAME(DATA_TYPE, LAYOUT, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) = \
-          CONCATENATE_PARAM_VALUE(LAYOUTS_CLASS, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PIPELINE_TYPE, PERSISTENT, LAYOUT);
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,       Persistent,   CompV3,   Atomic>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,       Persistent,   CompV3,   Atomic>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,       Persistent,   CompV3,   Atomic>,
+    std::tuple<    Col,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,       Persistent,   CompV3,   Atomic>
+>;
 
-// Macro to declare all layout combinations for a given set of parameters
-#define DECLARE_PARAMS_ALL_LAYOUTS(LAYOUTS_CLASS, DATA_TYPE, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) \
-    DECLARE_PARAM(LAYOUTS_CLASS, DATA_TYPE, RRR, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) \
-    DECLARE_PARAM(LAYOUTS_CLASS, DATA_TYPE, RRC, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) \
-    DECLARE_PARAM(LAYOUTS_CLASS, DATA_TYPE, RCR, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) \
-    DECLARE_PARAM(LAYOUTS_CLASS, DATA_TYPE, RCC, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) \
-    DECLARE_PARAM(LAYOUTS_CLASS, DATA_TYPE, CRR, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) \
-    DECLARE_PARAM(LAYOUTS_CLASS, DATA_TYPE, CRC, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) \
-    DECLARE_PARAM(LAYOUTS_CLASS, DATA_TYPE, CCR, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT) \
-    DECLARE_PARAM(LAYOUTS_CLASS, DATA_TYPE, CCC, PIPELINE_TYPE, M_MACRO_TILE, N_MACRO_TILE, K_MACRO_TILE, M_WARPS, N_WARPS, K_WARPS, M_MMA_TILE, N_MMA_TILE, K_MMA_TILE, PERSISTENT)
+using KernelTypesStreamKBf16PersistentAtomicCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,         I256,        I256,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Atomic>
+>;
 
-#include "test_gemm_streamk_types_fp16.hpp"
-#include "test_gemm_streamk_types_bf16.hpp"
-#include "test_gemm_streamk_types_fp8.hpp"
-#include "test_gemm_streamk_types_bf8.hpp"
+using KernelTypesStreamKBf8PersistentAtomicCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF8,      BF8,        F32,       BF16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Atomic>
+>;
+
+using KernelTypesStreamKFp8PersistentAtomicCompV3 = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Atomic>,
+    std::tuple<    Row,     Col,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Atomic>,
+    std::tuple<    Col,     Col,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Atomic>,
+    std::tuple<    Col,     Row,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Atomic>
+>;
+
+using KernelTypesStreamKFp16NonPersistentAtomicCompV3 = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Atomic>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Atomic>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Atomic>,
+    std::tuple<    Col,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Atomic>
+>;
+
+using KernelTypesStreamKBf16NonPersistentAtomicCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,         I256,        I256,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Atomic>
+>;
+
+using KernelTypesStreamKBf8NonPersistentAtomicCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,        BF8,      BF8,        F32,       BF16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Atomic>
+>;
+
+using KernelTypesStreamKFp8NonPersistentAtomicCompV3 = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Atomic>,
+    std::tuple<    Row,     Col,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Atomic>,
+    std::tuple<    Col,     Col,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Atomic>,
+    std::tuple<    Col,     Row,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Atomic>
+>;
+
+// Linear
+using KernelTypesStreamKFp16PersistentLinearCompV3 = ::testing::Types<
+//                ALayout  BLayout  CLayout   ADataType  BDataType  AccDataType  CDataType  M_MacroTile  N_MacroTile  K_MacroTile  M_WaveTile  N_WaveTile  K_WaveTile  Persistent    Pipeline  ReductionStrategy
+
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,   CompV3,   Linear>,
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,   CompV3,   Linear>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,   CompV3,   Linear>
+>;
+
+using KernelTypesStreamKBf16PersistentLinearCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,         I256,        I256,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Linear>
+>;
+
+using KernelTypesStreamKBf8PersistentLinearCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF8,      BF8,        F32,       BF16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Linear>
+>;
+
+using KernelTypesStreamKFp8PersistentLinearCompV3 = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Linear>,
+    std::tuple<    Row,     Col,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Col,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Row,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Linear>
+>;
+
+using KernelTypesStreamKFp16NonPersistentLinearCompV3 = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Linear>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Linear>
+>;
+
+using KernelTypesStreamKBf16NonPersistentLinearCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,         I256,        I256,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Linear>
+>;
+
+using KernelTypesStreamKBf8NonPersistentLinearCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,        BF8,      BF8,        F32,       BF16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Linear>
+>;
+
+using KernelTypesStreamKFp8NonPersistentLinearCompV3 = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Linear>,
+    std::tuple<    Row,     Col,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Col,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Row,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Linear>
+>;
+
+// Tree
+using KernelTypesStreamKFp16PersistentTreeCompV3 = ::testing::Types<
+//                ALayout  BLayout  CLayout   ADataType  BDataType  AccDataType  CDataType  M_MacroTile  N_MacroTile  K_MacroTile  M_WaveTile  N_WaveTile  K_WaveTile  Persistent    Pipeline  ReductionStrategy
+
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,   CompV3,   Tree>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,   CompV3,   Tree>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,   CompV3,   Tree>
+>;
+
+using KernelTypesStreamKBf16PersistentTreeCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,         I256,        I256,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Tree>
+>;
+
+using KernelTypesStreamKBf8PersistentTreeCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF8,      BF8,        F32,       BF16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Tree>
+>;
+
+using KernelTypesStreamKFp8PersistentTreeCompV3 = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Tree>,
+    std::tuple<    Row,     Col,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Col,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Row,     Row,       F8,        F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    Persistent,   CompV3,   Tree>
+>;
+
+using KernelTypesStreamKFp16NonPersistentTreeCompV3 = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Tree>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV3,   Tree>
+>;
+
+using KernelTypesStreamKBf16NonPersistentTreeCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,         I256,        I256,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Tree>
+>;
+
+using KernelTypesStreamKBf8NonPersistentTreeCompV3 = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,        BF8,      BF8,        F32,       BF16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Tree>
+>;
+
+using KernelTypesStreamKFp8NonPersistentTreeCompV3 = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Tree>,
+    std::tuple<    Row,     Col,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Col,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Row,     Row,       F8,         F8,        F32,        F16,         I128,        I128,        I32,         I32,       I32,       I16,    NonPersistent,   CompV3,   Tree>
+>;
+
+// ============================= Other Pipelines =============================
+
+using KernelTypesStreamKPipelines = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,      Mem,      Atomic>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   Mem,      Tree>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,      Mem,      Linear>,
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,      CompV4,   Atomic>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     NonPersistent,   CompV4,   Tree>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I32,       I32,       I16,     Persistent,      CompV4,   Linear>
+>;
+
+using KernelTypesStreamKRegression = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,        I256,        I256,        I32,         I32,       I32,       I16,     Persistent,      CompV3,   Atomic>,
+    std::tuple<    Col,     Col,     Row,       BF16,      BF16,        F32,       BF16,        I256,        I256,        I32,         I32,       I32,       I16,     Persistent,      CompV3,   Atomic>
+>;
+// ========================== WMMA Variants ==========================
+
+// Linear WMMA - Persistent
+using KernelTypesStreamKFp16PersistentLinearCompV3Wmma = ::testing::Types<
+//                ALayout  BLayout  CLayout   ADataType  BDataType  AccDataType  CDataType  M_MacroTile  N_MacroTile  K_MacroTile  M_WaveTile  N_WaveTile  K_WaveTile  Persistent    Pipeline  ReductionStrategy
+
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,   CompV3,   Linear>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,   CompV3,   Linear>
+>;
+
+using KernelTypesStreamKBf16PersistentLinearCompV3Wmma = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,         I256,        I256,        I32,         I16,       I16,       I16,    Persistent,   CompV3,   Linear>
+>;
+
+// Linear WMMA - NonPersistent
+using KernelTypesStreamKFp16NonPersistentLinearCompV3Wmma = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     NonPersistent,   CompV3,   Linear>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     NonPersistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     NonPersistent,   CompV3,   Linear>,
+    std::tuple<    Col,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     NonPersistent,   CompV3,   Linear>
+>;
+
+using KernelTypesStreamKBf16NonPersistentLinearCompV3Wmma = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,         I256,        I256,        I32,         I16,       I16,       I16,    NonPersistent,   CompV3,   Linear>
+>;
+
+// Tree WMMA - Persistent
+using KernelTypesStreamKFp16PersistentTreeCompV3Wmma = ::testing::Types<
+//                ALayout  BLayout  CLayout   ADataType  BDataType  AccDataType  CDataType  M_MacroTile  N_MacroTile  K_MacroTile  M_WaveTile  N_WaveTile  K_WaveTile  Persistent    Pipeline  ReductionStrategy
+
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,   CompV3,   Tree>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,   CompV3,   Tree>
+>;
+
+using KernelTypesStreamKBf16PersistentTreeCompV3Wmma = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,         I256,        I256,        I32,         I16,       I16,       I16,    Persistent,   CompV3,   Tree>
+>;
+
+// Tree WMMA - NonPersistent
+using KernelTypesStreamKFp16NonPersistentTreeCompV3Wmma = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     NonPersistent,   CompV3,   Tree>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     NonPersistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     NonPersistent,   CompV3,   Tree>,
+    std::tuple<    Col,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     NonPersistent,   CompV3,   Tree>
+>;
+
+using KernelTypesStreamKBf16NonPersistentTreeCompV3Wmma = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,         I256,        I256,        I32,         I16,       I16,       I16,    NonPersistent,   CompV3,   Tree>
+>;
+
+// Pipelines WMMA
+using KernelTypesStreamKPipelinesWmma = ::testing::Types<
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,      Mem,      Atomic>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     NonPersistent,   Mem,      Tree>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,      Mem,      Linear>,
+    std::tuple<    Row,     Row,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,      CompV4,   Atomic>,
+    std::tuple<    Row,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     NonPersistent,   CompV4,   Tree>,
+    std::tuple<    Col,     Col,     Row,       F16,       F16,         F32,       F16,         I256,        I256,        I32,         I16,       I16,       I16,     Persistent,      CompV4,   Linear>
+>;
+
+// Regression Wmma
+
+using KernelTypesStreamKRegressionWmma = ::testing::Types<
+    std::tuple<    Row,     Col,     Row,       BF16,      BF16,        F32,       BF16,        I256,        I256,        I32,         I16,       I16,       I16,     Persistent,      CompV3,   Atomic>,
+    std::tuple<    Col,     Col,     Row,       BF16,      BF16,        F32,       BF16,        I256,        I256,        I32,         I16,       I16,       I16,     Persistent,      CompV3,   Atomic>
+>;
+// clang-format on

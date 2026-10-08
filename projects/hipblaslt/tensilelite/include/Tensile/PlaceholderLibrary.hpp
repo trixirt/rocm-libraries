@@ -31,8 +31,11 @@
 #include <Tensile/SolutionLibrary.hpp>
 #include <Tensile/Tensile.hpp>
 
+#include <atomic>
 #include <algorithm>
 #include <map>
+
+#include <tensilelitehost/export.h>
 
 namespace TensileLite
 {
@@ -64,8 +67,11 @@ namespace TensileLite
         gfx1103,
         gfx1150,
         gfx1151,
+        gfx1152,
+        gfx1153,
         gfx1200,
         gfx1201,
+        gfx1250,
         All
     };
 
@@ -122,10 +128,16 @@ namespace TensileLite
             return "TensileLibrary_*_gfx1150";
         case LazyLoadingInit::gfx1151:
             return "TensileLibrary_*_gfx1151";
+        case LazyLoadingInit::gfx1152:
+            return "TensileLibrary_*_gfx1152";
+        case LazyLoadingInit::gfx1153:
+            return "TensileLibrary_*_gfx1153";
         case LazyLoadingInit::gfx1200:
             return "TensileLibrary_*_gfx1200";
         case LazyLoadingInit::gfx1201:
             return "TensileLibrary_*_gfx1201";
+        case LazyLoadingInit::gfx1250:
+            return "TensileLibrary_*_gfx1250";
         case LazyLoadingInit::None:
             return "";
         }
@@ -141,8 +153,16 @@ namespace TensileLite
         mutable std::mutex*                                             solutionsGuard;
         mutable std::mutex                                              lazyLoadingGuard;
         std::string                                                     filePrefix;
+
+        // Where to publish an indexed shard's blob cache, keyed by file prefix,
+        // so the owning master can resolve indices this shard has not parsed
+        // yet. Without it the shard loads but its solutions stay unreachable by
+        // index.
+        mutable std::map<std::string, std::shared_ptr<SolutionBlobCache<MySolution>>>*
+            solutionSources = nullptr;
         std::string                                                     suffix;
         std::string                                                     libraryDirectory;
+        mutable std::atomic<bool>                                       lastFindTopRetAll = false;
 
         mutable std::map<std::string, std::shared_ptr<SolutionLibrary<MyProblem, MySolution>>>*
             indexLoadedLibraries;
@@ -161,11 +181,34 @@ namespace TensileLite
                     = static_cast<MasterSolutionLibrary<MyProblem, MySolution>*>(newLibrary.get());
                 library = mLibrary->library;
 
+                // Indexed shards publish solutions later; stamp the name on
+                // the cache so it is applied as each one is parsed.
+                if(mLibrary->blobCache)
+                    mLibrary->blobCache->setCodeObjectFilename(getCodeObjectFileName());
+
                 std::lock_guard<std::mutex> lock(*solutionsGuard);
+
+                // Publishes this shard's cache so the owning master can resolve
+                // indices the shard has not parsed yet. Keyed by prefix, so a
+                // shard the master already published is not registered twice --
+                // two caches for one shard would retain two copies of its blob
+                // and hand out two objects for the same solution index.
+                auto publishShardCache = [&]() {
+                    if(mLibrary->blobCache && solutionSources != nullptr)
+                        solutionSources->emplace(filePrefix, mLibrary->blobCache);
+                };
+
                 if(loadedFiles->find(filePrefix) != loadedFiles->end())
                 {
                     if(indexLoadedLibraries->find(filePrefix) == indexLoadedLibraries->end())
+                    {
+                        // Keeping this shard's own tree, so its cache is the one
+                        // the leaves reference.
+                        publishShardCache();
                         return true;
+                    }
+                    // Adopting the tree the master loaded means adopting the
+                    // cache the master already published; ours is dropped.
                     library = (*indexLoadedLibraries)[filePrefix];
                     indexLoadedLibraries->erase(filePrefix);
 
@@ -175,6 +218,8 @@ namespace TensileLite
                                   << " from MasterLibrary cache" << std::endl;
                     return true;
                 }
+
+                publishShardCache();
 
                 using std::begin;
                 using std::end;
@@ -297,7 +342,15 @@ namespace TensileLite
             {
                 solution->codeObjectFilename = getCodeObjectFileName();
             }
+
+            // can't reach the requested number, means findTop already done its best
+            lastFindTopRetAll = (solutions.size() < numSolutions);
             return solutions;
+        }
+
+        virtual bool lastFindTopAlreadyRetAll() const override
+        {
+            return lastFindTopRetAll;
         }
 
         virtual SolutionVector<MySolution>
@@ -333,6 +386,13 @@ namespace TensileLite
         {
             return this->type();
         }
+
+        // Get the library filename for debug output
+        virtual std::string getLibraryFileName() const override
+        {
+            return filePrefix + suffix;
+        }
     };
 
 } // namespace TensileLite
+

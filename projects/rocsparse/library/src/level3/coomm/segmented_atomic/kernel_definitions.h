@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
-* Copyright (C) 2021-2025 Advanced Micro Devices, Inc. All rights Reserved.
+* Copyright (C) 2021-2026 Advanced Micro Devices, Inc. All rights Reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a copy
 * of this software and associated documentation files (the "Software"), to deal
@@ -39,7 +39,10 @@ namespace rocsparse
     __launch_bounds__(WF_SIZE) __global__
         void coommnn_segmented_atomic(rocsparse_operation trans_B,
                                       int64_t             nnz,
+                                      I                   m,
                                       I                   n,
+                                      I                   nstart,
+                                      int64_t             batch_count,
                                       int64_t             batch_stride_A,
                                       ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),
                                       const I* __restrict__ coo_row_ind,
@@ -58,22 +61,25 @@ namespace rocsparse
         ROCSPARSE_DEVICE_HOST_SCALAR_GET(alpha);
         if(alpha != static_cast<T>(0))
         {
-            rocsparse::coommnn_segmented_atomic_device<WF_SIZE, LOOPS, COLS, NT>(trans_B,
-                                                                                 nnz,
-                                                                                 n,
-                                                                                 batch_stride_A,
-                                                                                 alpha,
-                                                                                 coo_row_ind,
-                                                                                 coo_col_ind,
-                                                                                 coo_val,
-                                                                                 dense_B,
-                                                                                 ldb,
-                                                                                 batch_stride_B,
-                                                                                 dense_C,
-                                                                                 ldc,
-                                                                                 batch_stride_C,
-                                                                                 order_C,
-                                                                                 idx_base);
+            for(int64_t batch = hipBlockIdx_z; batch < batch_count; batch += hipGridDim_z)
+            {
+                rocsparse::coommnn_segmented_atomic_device<WF_SIZE, LOOPS, COLS, NT>(
+                    trans_B,
+                    nnz,
+                    m,
+                    n,
+                    nstart,
+                    alpha,
+                    load_pointer(coo_row_ind, batch, batch_stride_A),
+                    load_pointer(coo_col_ind, batch, batch_stride_A),
+                    load_pointer(coo_val, batch, batch_stride_A),
+                    load_pointer(dense_B, batch, batch_stride_B),
+                    ldb,
+                    load_pointer(dense_C, batch, batch_stride_C),
+                    ldc,
+                    order_C,
+                    idx_base);
+            }
         }
     }
 }
@@ -83,7 +89,10 @@ namespace rocsparse
         rocsparse::coommnn_segmented_atomic<WFSIZE, LOOPS, COLS, NT>(           \
             rocsparse_operation trans_B,                                        \
             int64_t             nnz,                                            \
+            I                   m,                                              \
             I                   n,                                              \
+            I                   nstart,                                         \
+            int64_t             batch_count,                                    \
             int64_t             batch_stride_A,                                 \
             ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),                      \
             const I* __restrict__ coo_row_ind,                                  \

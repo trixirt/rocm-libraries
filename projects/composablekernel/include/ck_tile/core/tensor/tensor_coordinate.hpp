@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2018-2023, Advanced Micro Devices, Inc. All rights reserved.
 
 #pragma once
 
@@ -16,16 +16,17 @@
 
 namespace ck_tile {
 
-template <index_t NDimHidden, typename TopDimensionHiddenIds>
+template <index_t NDimHidden, typename TopDimensionHiddenIds, bool LargeOffset = false>
 struct tensor_coordinate
-    : public tensor_adaptor_coordinate<NDimHidden, sequence<0>, TopDimensionHiddenIds>
+    : public tensor_adaptor_coordinate<NDimHidden, sequence<0>, TopDimensionHiddenIds, LargeOffset>
 {
-    using Base = tensor_adaptor_coordinate<NDimHidden, sequence<0>, TopDimensionHiddenIds>;
+    using Base =
+        tensor_adaptor_coordinate<NDimHidden, sequence<0>, TopDimensionHiddenIds, LargeOffset>;
 
     // TODO make these private
     static constexpr index_t ndim_top_ = TopDimensionHiddenIds::size();
 
-    using HiddenIndex = multi_index<NDimHidden>;
+    using HiddenIndex = typename Base::HiddenIndex;
     using TopIndex    = multi_index<ndim_top_>;
 
     public:
@@ -43,7 +44,7 @@ struct tensor_coordinate
 
     CK_TILE_HOST_DEVICE constexpr auto get_index() const { return Base::get_top_index(); }
 
-    CK_TILE_HOST_DEVICE constexpr index_t get_offset() const
+    CK_TILE_HOST_DEVICE constexpr auto get_offset() const
     {
         return Base::get_bottom_index()[number<0>{}];
     }
@@ -56,15 +57,15 @@ struct tensor_coordinate
     CK_TILE_HOST_DEVICE auto& get_hidden_index() { return Base::get_hidden_index(); }
 };
 
-template <typename TensorDesc, typename TopIndex>
+template <bool LargeOffset = false, typename TensorDesc, typename TopIndex>
 CK_TILE_HOST_DEVICE constexpr auto make_tensor_coordinate(const TensorDesc& tensor_desc,
                                                           const TopIndex& idx_top)
 {
-    const auto adaptor_coord = make_tensor_adaptor_coordinate(tensor_desc, idx_top);
+    const auto adaptor_coord = make_tensor_adaptor_coordinate<LargeOffset>(tensor_desc, idx_top);
 
     return tensor_coordinate<TensorDesc::get_num_of_hidden_dimension(),
-                             remove_cvref_t<decltype(TensorDesc::get_top_dimension_hidden_ids())>>{
-        adaptor_coord};
+                             remove_cvref_t<decltype(TensorDesc::get_top_dimension_hidden_ids())>,
+                             LargeOffset>{adaptor_coord};
 }
 
 template <bool JudgeDoTransforms = true, typename TensorDesc, typename TensorCoord, typename Index>
@@ -89,4 +90,9 @@ CK_TILE_HOST_DEVICE constexpr bool coordinate_has_valid_offset(const TensorDesc&
     return adaptor_coordinate_is_valid(tensor_desc, coord);
 }
 
+template <index_t N, typename T>
+CK_TILE_HOST_DEVICE void print(const tensor_coordinate<N, T>& coord)
+{
+    print(static_cast<typename tensor_coordinate<N, T>::Base>(coord));
+}
 } // namespace ck_tile

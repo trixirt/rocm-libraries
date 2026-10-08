@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2021 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2017-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -53,14 +53,14 @@ struct ordered_block_id
     //   my_kernel<<<x, y>>>(ordered_bid);
     //
     // On the kernel side it should be:
-    //   __globbal__ my_kernel(ordered_block_id<> ordered_bid)
+    //   __global__ my_kernel(ordered_block_id<> ordered_bid)
     //   {
     //     __shared__ ordered_block_id<>::storage ordered_bid_storage;
     //
     //     auto tid      = threadIdx.x;
     //     auto block_id = ordered_bid.get(tid, ordered_bid_storage);
     //   }
-    static_assert(std::is_integral<T>::value, "T must be integer");
+    static_assert(rocprim::is_integral<T>::value, "T must be integer");
     using id_type = T;
 
     /// Pointer to global memory that contains the atomic counter for block id.
@@ -106,6 +106,16 @@ struct ordered_block_id
             storage.id = ::rocprim::detail::atomic_add(this->id, 1);
         }
         ::rocprim::syncthreads();
+        return storage.id;
+    }
+
+    ROCPRIM_DEVICE ROCPRIM_INLINE
+    id_type& get_async(unsigned int tid, storage_type& storage)
+    {
+        if(tid == 0)
+        {
+            storage.id = ::rocprim::detail::atomic_add(this->id, 1);
+        }
         return storage.id;
     }
 
@@ -164,6 +174,12 @@ struct block_id_wrapper<T, false>
     {
         return ::rocprim::detail::block_id<0>();
     }
+
+    ROCPRIM_DEVICE ROCPRIM_INLINE
+    id_type get_async(unsigned int /*tid*/, storage_type& /*storage*/)
+    {
+        return ::rocprim::detail::block_id<0>();
+    }
 };
 
 template<class T>
@@ -212,6 +228,12 @@ struct block_id_wrapper<T, true>
         auto id = ordered_id.get(tid, storage);
         ::rocprim::syncthreads();
         return id;
+    }
+
+    ROCPRIM_DEVICE ROCPRIM_INLINE
+    id_type& get_async(unsigned int tid, storage_type& storage)
+    {
+        return ordered_id.get_async(tid, storage);
     }
 
     ::rocprim::detail::ordered_block_id<id_type> ordered_id;
@@ -278,7 +300,7 @@ hipError_t check_if_using_atomic_block_id(hipStream_t stream, bool& enable)
         target_arch arch;
         ROCPRIM_RETURN_ON_ERROR(rocprim::detail::get_device_arch(device_id, arch));
 
-        needs_hotfix = (arch == target_arch::gfx942) || (arch == target_arch::gfx950);
+        needs_hotfix = (arch == target_arch::gfx942) || (arch == target_arch::gfx950) || (arch == target_arch::gfx1250);
     }
 
     switch(data.option)

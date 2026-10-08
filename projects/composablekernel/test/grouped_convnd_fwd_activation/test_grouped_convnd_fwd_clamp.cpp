@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2018-2025, Advanced Micro Devices, Inc. All rights reserved.
 
 #include <cstdlib>
 #include <iostream>
@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include "profiler/profile_grouped_conv_fwd_impl.hpp"
+#include "ck/host_utility/device_prop.hpp"
 
 #include "ck/tensor_operation/gpu/element/element_wise_operation.hpp"
 static ck::index_t param_mask     = 0xffffff;
@@ -25,7 +26,13 @@ class TestGroupedConvndFwd : public ::testing::Test
     using IndexType = ck::index_t;
 
     std::vector<ck::utils::conv::ConvParam> conv_params;
-
+#if defined(CK_TEST_DISABLE_GPU_VALIDATION)
+    static constexpr int verify_ = 1; // CPU reference
+#else
+    static constexpr int verify_ = 2; // GPU reference
+#endif
+    // On gfx1250, the naive GPU reference kernel can hang. Always use CPU reference.
+    int get_verify() const { return (ck::is_gfx125_supported() && verify_ == 2) ? 1 : verify_; }
     template <ck::index_t NDimSpatial>
     void Run()
     {
@@ -50,10 +57,10 @@ class TestGroupedConvndFwd : public ::testing::Test
                                                                               DataType,
                                                                               IndexType,
                                                                               Clamp>(
-                               true,  // do_verification
-                               1,     // init_method: integer value
-                               false, // do_log
-                               false, // time_kernel
+                               get_verify(), // do_verification: 2 = GPU reference
+                               1,            // init_method: integer value
+                               false,        // do_log
+                               false,        // time_kernel
                                param,
                                out_element_op,
                                instance_index);
@@ -89,19 +96,74 @@ TYPED_TEST(TestGroupedConvndFwd2d, Test2D)
 {
     this->conv_params.clear();
     this->conv_params.push_back(
+        {2, 3, 5, 96, 200, {1, 1}, {73, 128}, {1, 1}, {1, 1}, {0, 0}, {0, 0}});
+    this->conv_params.push_back(
+        {2, 1, 1, 32, 32, {1, 1}, {128, 128}, {1, 1}, {1, 1}, {0, 0}, {0, 0}});
+    this->conv_params.push_back(
+        {2, 1, 1, 32, 32, {2, 2}, {128, 128}, {1, 1}, {1, 1}, {0, 0}, {0, 0}});
+    this->conv_params.push_back(
+        {2, 1, 1, 32, 32, {3, 3}, {128, 128}, {1, 1}, {1, 1}, {0, 0}, {0, 0}});
+    this->conv_params.push_back(
+        {2, 1, 1, 32, 32, {5, 5}, {128, 128}, {1, 1}, {1, 1}, {0, 0}, {0, 0}});
+    this->conv_params.push_back(
+        {2, 1, 1, 32, 32, {9, 9}, {128, 128}, {1, 1}, {1, 1}, {0, 0}, {0, 0}});
+
+    this->conv_params.push_back(
         {2, 2, 32, 128, 256, {1, 1}, {7, 7}, {2, 2}, {1, 1}, {0, 0}, {0, 0}});
     this->conv_params.push_back(
         {2, 2, 32, 128, 256, {3, 3}, {14, 14}, {1, 1}, {1, 1}, {1, 1}, {1, 1}});
+
+    this->conv_params.push_back(
+        {2, 2, 32, 128, 256, {1, 1}, {3, 3}, {1, 1}, {1, 1}, {0, 0}, {0, 0}});
+    this->conv_params.push_back({2, 1, 1, 1, 32, {3, 3}, {32, 32}, {1, 1}, {1, 1}, {1, 1}, {1, 1}});
+    this->conv_params.push_back({2, 1, 1, 64, 3, {3, 3}, {32, 32}, {1, 1}, {1, 1}, {1, 1}, {1, 1}});
+    this->conv_params.push_back({2, 1, 1, 1, 1, {3, 3}, {32, 32}, {1, 1}, {1, 1}, {1, 1}, {1, 1}});
+
+    this->conv_params.push_back(
+        {2, 96, 1, 1, 1, {1, 1}, {120, 160}, {1, 1}, {1, 1}, {1, 1}, {1, 1}});
+    this->conv_params.push_back(
+        {2, 96, 1, 1, 1, {3, 3}, {120, 160}, {1, 1}, {1, 1}, {1, 1}, {1, 1}});
     this->template Run<2>();
 }
 
 TYPED_TEST(TestGroupedConvndFwd3d, Test3D)
 {
     this->conv_params.clear();
+
+    this->conv_params.push_back(
+        {3, 3, 5, 96, 200, {1, 1, 1}, {37, 37, 16}, {1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}});
+    this->conv_params.push_back(
+        {3, 1, 1, 32, 32, {1, 1, 1}, {32, 32, 32}, {1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}});
+    this->conv_params.push_back(
+        {3, 1, 1, 32, 32, {2, 2, 2}, {32, 32, 32}, {1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}});
+    this->conv_params.push_back(
+        {3, 1, 1, 32, 32, {3, 3, 3}, {32, 32, 32}, {1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}});
+    this->conv_params.push_back(
+        {3, 1, 1, 32, 32, {5, 5, 5}, {32, 32, 32}, {1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}});
+    this->conv_params.push_back(
+        {3, 1, 1, 32, 32, {9, 9, 9}, {32, 32, 32}, {1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}});
+
     this->conv_params.push_back(
         {3, 2, 32, 128, 256, {1, 1, 1}, {7, 7, 7}, {2, 2, 2}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}});
     this->conv_params.push_back(
         {3, 2, 32, 128, 256, {3, 3, 3}, {14, 14, 3}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}});
+
+    this->conv_params.push_back(
+        {3, 2, 32, 128, 256, {1, 1, 1}, {3, 3, 3}, {1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}});
+    this->conv_params.push_back(
+        {3, 1, 1, 32, 32, {1, 1, 1}, {16, 16, 16}, {1, 1, 1}, {1, 1, 1}, {0, 0, 0}, {0, 0, 0}});
+
+    this->conv_params.push_back(
+        {3, 1, 1, 1, 32, {3, 3, 3}, {32, 32, 32}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}});
+    this->conv_params.push_back(
+        {3, 1, 1, 64, 3, {3, 3, 3}, {32, 32, 32}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}});
+    this->conv_params.push_back(
+        {3, 1, 1, 1, 1, {3, 3, 3}, {32, 32, 32}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}});
+
+    this->conv_params.push_back(
+        {3, 96, 1, 1, 1, {1, 1, 1}, {120, 40, 20}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}});
+    this->conv_params.push_back(
+        {3, 96, 1, 1, 1, {3, 3, 3}, {120, 40, 20}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}, {1, 1, 1}});
     this->template Run<3>();
 }
 int main(int argc, char** argv)

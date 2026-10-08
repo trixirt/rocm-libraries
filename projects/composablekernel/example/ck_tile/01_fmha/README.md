@@ -15,14 +15,14 @@ Running the build recipe will produce the executable `tile_example_fmha_fwd`.
 
 The executables reside in `bin` subdirectory of the build directory.
 
-This example provides recipes for `tile_example_fmha_fwd`, `tile_example_fmha_bwd`, `tile_example_fmha_fwd_v3`.
+This example provides recipes for `tile_example_fmha_fwd`, `tile_example_fmha_bwd`.
 
-> [!NOTE] 
-> `cmake-ck-dev.sh` is a CMake wrapper. 
+> [!NOTE]
+> `cmake-ck-dev.sh` is a CMake wrapper.
 >
 > The first argument is the path to composable_kernel sources.
 >
-> The second argument is the gfx architectures string (e.g. "gfx950" or "gfx90a;gfx942"). 
+> The second argument is the gfx architectures string (e.g. "gfx950" or "gfx90a;gfx942").
 >
 > The remaining arguments are optional and are passed through to CMake.
 > E.g. `-G Ninja` specifies ninja as the build system.
@@ -61,22 +61,19 @@ args:
           -d    head dim for q, k (default:128)
         -d_v    head dim for v, -1 means equal to d (default:-1)
     -scale_s    scale factor of S. 0 means equal to 1/sqrt(hdim). (default:0)
-                note when squant=1, this value will be modified by range_q/k
-    -range_q    per-tensor quantization range of q. used if squant=1. (default:16)
-    -range_k    per-tensor quantization range of k. used if squant=1. (default:16)
-    -range_v    per-tensor quantization range of v. used if squant=1. (default:16)
-    -range_p    per-tensor quantization range of p [e^(s-m)]. used if squant=1. (default:1)
-    -range_o    per-tensor quantization range of o (p*v). used if squant=1. (default:16)
-     -squant    if using static quantization fusion or not. auto: fp8 will default use squant, other will not (default:auto)
-                0: no static quant(not implemented) 1: apply scale_p and scale_o with respect to P and O.
-                calculate scale_s, scale_p, scale_o according to range_q, range_k, range_v, range_p, range_o
+     -qscale    n or 0, no scaling (default:n)
+                pt or 1, per-tensor scale
+                bs or 2, block scale
+                kvbs or 3, Q per-tensor, K/V per-page block scale, only in batch_prefill
+                mx or 4, microscaling (exclusively for mxfp8/mxfp4)
+                ph or 5, per-head scale
       -iperm    permute input (default:1)
                 if true, will be b*h*s*d, else b*s*h*d
       -operm    permute output (default:1)
        -bias    n or 0, no bias (default:n)
                 e(lementwise) or 1, elementwise bias with 1*1*s*s. e:1, 1*h*s*s. e:2, b*h*s*s
                 a(libi) or 2, alibi with 1*h. a:1, b*h
-       -prec    data type. fp16/bf16/fp8/bf8 (default:fp16)
+       -prec    data type. fp32/fp16/bf16/fp8/fp8bf16/fp8fp32/mxfp8/mxfp4 (default:fp16)
        -mask    0: no mask, 1: top-left(same as 't'), 2:bottom-right(same as 'b') (default:0)
                 't', top-left causal mask, 'b', bottom-r causal mask
                 't:l,r', top-left sliding window attn(swa) with FA style left right size
@@ -104,7 +101,7 @@ args:
                 Comma-separated list of length 'b'. If empty, no override
 ```
 Example 1: `./bin/tile_example_fmha_fwd -b=1 -h=16 -s=16384 -d=128` will run a fmha case with batch=1, nhead=16, sequence length=16384, hdim=128, fp16 case.
-Example 2: `./bin/tile_example_fmha_fwd -b=1 -h=8 -s=16384 -d=64 -drop_prefs=1 -drop_seed=10 -drop_offset=1234` will run a fmha case with 
+Example 2: `./bin/tile_example_fmha_fwd -b=1 -h=8 -s=16384 -d=64 -drop_prefs=1 -drop_seed=10 -drop_offset=1234` will run a fmha case with
   batch=1, nhead=8, sequence length=16384, hdim=64, drop_seed=0 (in GPU memory), drop_offset=1234 (in GPU memory) fp16 case
 
 ## Padding Examples
@@ -168,7 +165,32 @@ We support sequence padding and variable-length processing in both batch and gro
 
 Both approaches optimize memory access patterns while supporting flexible sequence length requirements commonly found in transformer inference scenarios.
 
-## FP8 experimental support
-As described in [this blog](https://blog.hippoml.com/8bit-hippoattention-up-to-3x-faster-compared-to-flashattentionv2-8f9def90b482), we have an experimental support for fp8 fmha kernels, you can evaluate the performance by setting the arg `-prec=fp8` to the `tile_example_fmha_fwd`, on a gfx942 machine and ROCm 6.0+.
+## FP8 support
+FP8 FMHA kernels are supported on gfx942/gfx950/gfx1250 machines with ROCm 6.0+. Three fp8-based precision modes are available via `-prec`:
 
-Currently we only support `-vlayout=r`( `seqlen*hdim` for V matrix)  for fp8 and fp8bf16 now. Full feature support will come later.
+| `-prec` value | Q/K/V input type | Output type | Description |
+|---|---|---|---|
+| `fp8` | fp8 | fp8 | Fully fp8: both inputs and output are in fp8 |
+| `fp8bf16` | fp8 | bf16 | Mixed precision: fp8 inputs, bf16 output — useful when the consumer expects a wider-range output format |
+| `fp8fp32` | fp8 | fp32 | Mixed precision: fp8 inputs, fp32 output — highest-precision output, suitable for debugging or further fp32 processing |
+
+The following quantization scale modes are available via `-qscale`:
+
+| `-qscale` value | Description |
+|---|---|
+| `n` or `0` | No quantization scale (default) |
+| `pt` or `1` | Per-tensor quantization scale — a single scale factor is applied to the entire tensor |
+| `bs` or `2` | Per-block quantization scale — a scale factor is applied per block of elements |
+| `kvbs` or `3` | Q per-tensor + K/V per-page block scale (batch_prefill only) |
+| `mx` or `4` | Microscaling (MX format), exclusively for `mxfp8` and `mxfp4` data types |
+| `ph` or `5` | Per-head quantization scale — one scale factor per (batch, head) |
+
+Currently only `-vlayout=r` (`seqlen*hdim` for V matrix) is supported for fp8 data types.
+
+### V scale with `bs` on gfx1250
+
+The V scale must be a **power of two**. It rides an E8M0 scale operand and is truncated toward
+zero, so `1.9` is applied as `1.0`.
+
+Round the V scale up to a power of two **at quantization time** and quantize with that same
+value. This is not checked at runtime.

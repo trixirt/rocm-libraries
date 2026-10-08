@@ -399,7 +399,7 @@ bool R2CTrans_FuseShim::CheckSchemeFusable()
     //   we allow the EffectivePlacement of (r2c-in, trans-out) to be inplace,
     //   then we force it to be OP, but change the nextLeafNode's input..
     // So if the nextLeafNode isn't one of these (ex, a transpose for TRTRT)
-    //   then we couldn't change tranpose's input buffer
+    //   then we couldn't change transpose's input buffer
     ComputeScheme nextFFTScheme = nodes[2]->scheme;
     if(nextFFTScheme == CS_KERNEL_STOCKHAM || nextFFTScheme == CS_KERNEL_STOCKHAM_BLOCK_CC)
         allowInplace = true;
@@ -469,6 +469,7 @@ std::unique_ptr<TreeNode> R2CTrans_FuseShim::FuseKernels()
                                                                   : rocfft_placement_notinplace;
     }
     fused->outputLength = transpose->outputLength;
+    fused->dimension    = transpose->dimension;
 
     // This fusion is crossing sub-trees of the plan, so adjust the
     // parent CS_REAL_TRANSFORM_EVEN to output what this fused kernel
@@ -516,7 +517,7 @@ bool TransC2R_FuseShim::CheckSchemeFusable()
     //   we allow the EffectivePlacement of (trans-in, c2r-out) to be inplace,
     //   then we force it to be OP, but change the nextLeafNode's input..
     // So if the nextLeafNode isn't one of these (ex, a transpose for TRTRT)
-    //   then we couldn't change tranpose's input buffer
+    //   then we couldn't change transpose's input buffer
     ComputeScheme nextFFTScheme = nodes[2]->scheme;
     if(nextFFTScheme == CS_KERNEL_STOCKHAM || nextFFTScheme == CS_KERNEL_STOCKHAM_BLOCK_CC
        || nextFFTScheme == CS_KERNEL_PAD_MUL)
@@ -569,6 +570,7 @@ std::unique_ptr<TreeNode> TransC2R_FuseShim::FuseKernels()
                                                                   : rocfft_placement_notinplace;
     }
     fused->outputLength = c2r->outputLength;
+    fused->dimension    = transpose->dimension;
 
     // This fusion is crossing sub-trees of the plan, so adjust the
     // parent CS_REAL_TRANSFORM_EVEN to expect what this fused kernel

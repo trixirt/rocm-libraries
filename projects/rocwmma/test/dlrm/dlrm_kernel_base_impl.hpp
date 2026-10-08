@@ -109,10 +109,14 @@ namespace rocwmma
         auto isGfx908 = deviceArch == DeviceInfo::GFX908;
         auto isGfx11  = (deviceArch == DeviceInfo::GFX1100) || (deviceArch == DeviceInfo::GFX1101)
                        || (deviceArch == DeviceInfo::GFX1102)
+                       || (deviceArch == DeviceInfo::GFX1103)
                        || (deviceArch == DeviceInfo::GFX1150)
-                       || (deviceArch == DeviceInfo::GFX1151);
+                       || (deviceArch == DeviceInfo::GFX1151)
+                       || (deviceArch == DeviceInfo::GFX1152)
+                       || (deviceArch == DeviceInfo::GFX1153);
 
-        auto isGfx12 = (deviceArch == DeviceInfo::GFX1200) || (deviceArch == DeviceInfo::GFX1201);
+        auto isGfx12 = (deviceArch == DeviceInfo::GFX1200) || (deviceArch == DeviceInfo::GFX1201)
+                       || (deviceArch == DeviceInfo::GFX1250);
 
         // Datatypes
         auto isF64 = std::is_same<DataT, float64_t>::value;
@@ -196,12 +200,12 @@ namespace rocwmma
                       << "MatM, MatK, MatB, "
 #if ROCWMMA_VALIDATION_TESTS
                       << "maxRelativeDiff, "
-                      << "tolerance, "
 #endif // ROCWMMA_VALIDATION_TESTS
                       << "elapsedMs, "
                       << "Problem Size(GFlops), "
                       << "TFlops/s, "
-                      << "Efficiency(%)" << std::endl;
+                      << "Efficiency(%), "
+                      << "Result" << std::endl;
     }
 
     template <uint32_t TileSize, typename DataT>
@@ -333,6 +337,7 @@ namespace rocwmma
                                               inputBatchOffset,
                                               outputBatchOffset,
                                               accBatchOffset);
+                        CHECK_HIP_ERROR(hipGetLastError());
                     };
                 }
             }
@@ -368,8 +373,10 @@ namespace rocwmma
                                               mB,
                                               upstreamBatchOffset,
                                               accBatchOffset);
+                        CHECK_HIP_ERROR(hipGetLastError());
                         CHECK_HIP_ERROR(hipEventRecord(syncEvent));
                         CHECK_HIP_ERROR(hipEventSynchronize(syncEvent));
+                        CHECK_HIP_ERROR(hipEventDestroy(syncEvent));
 
                         hipExtLaunchKernelGGL((this->kernelBwdImpl()),
                                               (this->gridDim()),
@@ -390,6 +397,7 @@ namespace rocwmma
                                               inputBatchOffset,
                                               upstreamBatchOffset,
                                               accBatchOffset);
+                        CHECK_HIP_ERROR(hipGetLastError());
                     };
                 }
             }

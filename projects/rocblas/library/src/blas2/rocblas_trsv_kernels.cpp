@@ -190,42 +190,78 @@ void ROCBLAS_KERNEL_ILF rocblas_trsv_transpose(const rocblas_int n,
     }
 }
 
-template <rocblas_int n>
-inline constexpr bool equals_two = false;
+// Under ASan every shared memory access in the fully inlined inversion is instrumented,
+// making register allocation of the trsv kernels take tens of minutes per architecture.
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define ROCBLAS_TRSV_INVERT_ILF __device__ __attribute__((noinline))
+#endif
+#endif
+#ifndef ROCBLAS_TRSV_INVERT_ILF
+#define ROCBLAS_TRSV_INVERT_ILF ROCBLAS_KERNEL_ILF
+#endif
 
-template <>
-inline constexpr bool equals_two<2> = true;
-
-// Invert a 2x2 triangular section of A
+// Recursive invert to solve A^-1
 template <typename T,
           rocblas_int N,
           rocblas_int LDA,
-          rocblas_int threadsx,
-          rocblas_int threadsy,
+          rocblas_int DIM_X,
+          rocblas_int DIM_Y,
           bool        UNIT,
-          bool        TRANS,
-          std::enable_if_t<equals_two<N>, rocblas_int> = 0>
-void ROCBLAS_KERNEL_ILF rocblas_trsv_invert(T* const __restrict__ A, T* const __restrict__ sx)
+          bool        TRANS>
+void ROCBLAS_TRSV_INVERT_ILF rocblas_trsv_invert(T* const __restrict__ A, T* const __restrict__ sx)
 {
-    if(threadIdx.x == 0 && threadIdx.y == 0)
+    if constexpr(N == 2)
     {
-        if(UNIT)
+        // Invert a 2x2 triangular section of A
+        if(threadIdx.x == 0 && threadIdx.y == 0)
         {
-            A[0]       = 1;
-            A[LDA + 1] = 1;
+            if(UNIT)
+            {
+                A[0]       = 1;
+                A[LDA + 1] = 1;
+            }
+            else
+            {
+                // Diagonal is already stored as 1 / A[x], so A[0] and A[LDA + 1] are already done
+                // A[1] = -A[1] * (1 / A[0]) * (1 / A[LDA + 1])
+                A[1] = A[1] * (A[0] * A[LDA + 1]);
+            }
+            if(TRANS)
+            {
+                // For the transpose case, we can simply copy over the solved A[1]
+                // to the appropriate place
+                A[LDA] = A[1];
+            }
         }
-        else
-        {
-            // Diagonal is already stored as 1 / A[x], so A[0] and A[LDA + 1] are already done
-            // A[1] = -A[1] * (1 / A[0]) * (1 / A[LDA + 1])
-            A[1] = A[1] * (A[0] * A[LDA + 1]);
-        }
+    }
+    else
+    {
+        // A is broken down as:
+        // A = [ A_11 0    ]
+        //     [ A_21 A_22 ]
+
+        // A^-1 can be solved as:
+        // A^-1 = [ (A_11^-1)                   (0)     ]
+        //        [ (-A_21 * A_11^-1 * A_22^-1) (A_22^-1)]
+
+        // Invert A_11 section by breaking into smaller and smaller pieces
+        rocblas_trsv_invert<T, N / 2, LDA, DIM_X, DIM_Y, UNIT, TRANS>(A, sx);
+        __syncthreads();
+
+        // Solve A_21 section
+        rocblas_invert_solve_A21<T, N / 2, LDA, DIM_X, DIM_Y, UNIT>(
+            A, &A[N / 2], &A[(LDA + 1) * N / 2], sx);
+
         if(TRANS)
         {
-            // For the transpose case, we can simply copy over the solved A[1]
-            // to the appropriate place
-            A[LDA] = A[1];
+            __syncthreads();
+            rocblas_trsv_transpose<T, LDA>(N / 2, &A[N / 2], &A[(N / 2) * LDA]);
         }
+        __syncthreads();
+
+        // Invert A_22 section by breaking into smaller and smaller pieces
+        rocblas_trsv_invert<T, N / 2, LDA, DIM_X, DIM_Y, UNIT, TRANS>(&A[(LDA + 1) * N / 2], sx);
     }
 }
 
@@ -236,108 +272,65 @@ template <typename T,
           rocblas_int DIM_X,
           rocblas_int DIM_Y,
           bool        UNIT,
-          bool        TRANS,
-          std::enable_if_t<!equals_two<N>, rocblas_int> = 0>
-void ROCBLAS_KERNEL_ILF rocblas_trsv_invert(T* const __restrict__ A, T* const __restrict__ sx)
+          bool        TRANS>
+void ROCBLAS_TRSV_INVERT_ILF rocblas_trsv_invert_upper(T* const __restrict__ A,
+                                                       T* const __restrict__ sx)
 {
-    // A is broken down as:
-    // A = [ A_11 0    ]
-    //     [ A_21 A_22 ]
-
-    // A^-1 can be solved as:
-    // A^-1 = [ (A_11^-1)                   (0)     ]
-    //        [ (-A_21 * A_11^-1 * A_22^-1) (A_22^-1)]
-
-    // Invert A_11 section by breaking into smaller and smaller pieces
-    rocblas_trsv_invert<T, N / 2, LDA, DIM_X, DIM_Y, UNIT, TRANS>(A, sx);
-    __syncthreads();
-
-    // Solve A_21 section
-    rocblas_invert_solve_A21<T, N / 2, LDA, DIM_X, DIM_Y, UNIT>(
-        A, &A[N / 2], &A[(LDA + 1) * N / 2], sx);
-
-    if(TRANS)
+    if constexpr(N == 2)
     {
-        __syncthreads();
-        rocblas_trsv_transpose<T, LDA>(N / 2, &A[N / 2], &A[(N / 2) * LDA]);
+        // Invert a 2x2 triangular section of A
+        if(threadIdx.x == 0 && threadIdx.y == 0)
+        {
+            if(UNIT)
+            {
+                A[0]       = 1;
+                A[LDA + 1] = 1;
+            }
+            else
+            {
+                // Diagonal is already stored as 1 / A[x], so A[0] and A[LDA + 1] are already done
+                // A[1] = -A[1] * (1 / A[0]) * (1 / A[LDA + 1])
+                A[LDA] = A[LDA] * (A[0] * A[LDA + 1]);
+            }
+            if(TRANS)
+            {
+                // For the transpose case, we can simply copy over the solved A[1]
+                // to the appropriate place
+                A[1] = A[LDA];
+            }
+        }
     }
-    __syncthreads();
-
-    // Invert A_22 section by breaking into smaller and smaller pieces
-    rocblas_trsv_invert<T, N / 2, LDA, DIM_X, DIM_Y, UNIT, TRANS>(&A[(LDA + 1) * N / 2], sx);
-}
-
-// Invert a 2x2 triangular section of A
-template <typename T,
-          rocblas_int N,
-          rocblas_int LDA,
-          rocblas_int threadsx,
-          rocblas_int threadsy,
-          bool        UNIT,
-          bool        TRANS,
-          std::enable_if_t<equals_two<N>, rocblas_int> = 0>
-void ROCBLAS_KERNEL_ILF rocblas_trsv_invert_upper(T* const __restrict__ A, T* const __restrict__ sx)
-{
-    if(threadIdx.x == 0 && threadIdx.y == 0)
+    else
     {
-        if(UNIT)
-        {
-            A[0]       = 1;
-            A[LDA + 1] = 1;
-        }
-        else
-        {
-            // Diagonal is already stored as 1 / A[x], so A[0] and A[LDA + 1] are already done
-            // A[1] = -A[1] * (1 / A[0]) * (1 / A[LDA + 1])
-            A[LDA] = A[LDA] * (A[0] * A[LDA + 1]);
-        }
+        // A is broken down as:
+        // A = [ A_11 A_12 ]
+        //     [ 0    A_22 ]
+
+        // A^-1 can be solved as:
+        // A^-1 = [ (A_11^-1) (A_11^-1 * -A_12 * A_22^-1) ]
+        //        [ (0)       (A_22^-1)                   ]
+
+        // Invert A_22 section by breaking into smaller and smaller pieces
+        rocblas_trsv_invert_upper<T, N / 2, LDA, DIM_X, DIM_Y, UNIT, TRANS>(&A[(LDA + 1) * N / 2],
+                                                                            sx);
+        __syncthreads();
+        __threadfence();
+
+        // Solve A_21 section
+        //                                             A11, A12,             A22
+        rocblas_invert_solve_A12<T, N / 2, LDA, DIM_X, DIM_Y, UNIT>(
+            A, &A[(N / 2) * LDA], &A[(LDA + 1) * N / 2], sx);
+
         if(TRANS)
         {
-            // For the transpose case, we can simply copy over the solved A[1]
-            // to the appropriate place
-            A[1] = A[LDA];
+            __syncthreads();
+            rocblas_trsv_transpose<T, LDA>(N / 2, &A[(N / 2) * LDA], &A[(N / 2)]);
         }
-    }
-}
-
-// Recursive invert to solve A^-1
-template <typename T,
-          rocblas_int N,
-          rocblas_int LDA,
-          rocblas_int DIM_X,
-          rocblas_int DIM_Y,
-          bool        UNIT,
-          bool        TRANS,
-          std::enable_if_t<!equals_two<N>, rocblas_int> = 0>
-void ROCBLAS_KERNEL_ILF rocblas_trsv_invert_upper(T* const __restrict__ A, T* const __restrict__ sx)
-{
-    // A is broken down as:
-    // A = [ A_11 A_12 ]
-    //     [ 0    A_22 ]
-
-    // A^-1 can be solved as:
-    // A^-1 = [ (A_11^-1) (A_11^-1 * -A_12 * A_22^-1) ]
-    //        [ (0)       (A_22^-1)                   ]
-
-    // Invert A_22 section by breaking into smaller and smaller pieces
-    rocblas_trsv_invert_upper<T, N / 2, LDA, DIM_X, DIM_Y, UNIT, TRANS>(&A[(LDA + 1) * N / 2], sx);
-    __syncthreads();
-    __threadfence();
-
-    // Solve A_21 section
-    //                                             A11, A12,             A22
-    rocblas_invert_solve_A12<T, N / 2, LDA, DIM_X, DIM_Y, UNIT>(
-        A, &A[(N / 2) * LDA], &A[(LDA + 1) * N / 2], sx);
-
-    if(TRANS)
-    {
         __syncthreads();
-        rocblas_trsv_transpose<T, LDA>(N / 2, &A[(N / 2) * LDA], &A[(N / 2)]);
-    }
-    __syncthreads();
 
-    // Invert A_11 section by breaking into smaller and smaller pieces
-    rocblas_trsv_invert_upper<T, N / 2, LDA, DIM_X, DIM_Y, UNIT, TRANS>(A, sx);
+        // Invert A_11 section by breaking into smaller and smaller pieces
+        rocblas_trsv_invert_upper<T, N / 2, LDA, DIM_X, DIM_Y, UNIT, TRANS>(A, sx);
+    }
 }
 
 template <typename T, rocblas_int N, rocblas_int DIM_Y, bool UPPER>
@@ -502,10 +495,8 @@ rocblas_trsv_device(rocblas_int    n,
     // Load appropriate pointers
     uint32_t batch = blockIdx.z;
 
-#if DEVICE_GRID_YZ_16BIT
     for(; batch < batch_count; batch += c_YZ_grid_launch_limit)
     {
-#endif
 
         auto* __restrict__ A = load_ptr_batch(dA, batch, offset_A, stride_A);
         auto* __restrict__ x = load_ptr_batch(dx, batch, offset_x, stride_x);
@@ -565,7 +556,7 @@ rocblas_trsv_device(rocblas_int    n,
                                || (TRANS && !LOWER && block_row < INV_AFTER)
                                || (TRANS && row_is_remainder);
 #else
-    bool cache_transpose = TRANS; // works for ALL without inversion method
+        bool cache_transpose = TRANS; // works for ALL without inversion method
 #endif
         if(!row_is_remainder)
         {
@@ -761,16 +752,16 @@ rocblas_trsv_device(rocblas_int    n,
                     x[(block_row * DIM_X + tid) * incx] = val;
         }
 #else
-    // Solve the diagonal block
-    if(backwards_sub)
-        rocblas_trsv_block_solve_upper<DIM_X, UNIT>(sAdiag, DIM_X, val);
-    else
-        rocblas_trsv_block_solve_lower<DIM_X, UNIT>(sAdiag, DIM_X, val);
+        // Solve the diagonal block
+        if(backwards_sub)
+            rocblas_trsv_block_solve_upper<DIM_X, UNIT>(sAdiag, DIM_X, val);
+        else
+            rocblas_trsv_block_solve_lower<DIM_X, UNIT>(sAdiag, DIM_X, val);
 
-    // Store solved value into x
-    if(!row_is_remainder || tx < remainder)
-        if(ty == 0)
-            x[(block_row * DIM_X + tid) * incx] = val;
+        // Store solved value into x
+        if(!row_is_remainder || tx < remainder)
+            if(ty == 0)
+                x[(block_row * DIM_X + tid) * incx] = val;
 #endif
 
         // ensure solved x values are saved
@@ -784,10 +775,32 @@ rocblas_trsv_device(rocblas_int    n,
             w_completed_sec[batch]++;
 
         __threadfence();
-
-#if DEVICE_GRID_YZ_16BIT
     }
-#endif
+}
+
+// this file uses kernels some defined above so inlined here
+#include "rocblas_trsv_big_batch_kernel.hpp"
+
+/**
+ * @brief Heuristic to determine if big batch kernel should be used
+ * 
+ * The big batch kernel is beneficial when:
+ * - batch_count is much larger than N
+ * - N is not big
+ * 
+ * @param n Matrix dimension
+ * @param batch_count Number of batched operations
+ * @return true if big batch kernel should be used
+ */
+inline bool should_use_big_batch_kernel(rocblas_int n, rocblas_int batch_count)
+{
+    // Threshold: use big batch kernel when batch_count > 16*n
+    constexpr rocblas_int BIG_BATCH_TO_N_RATIO = 16;
+
+    // Don't use big batch kernel for large matrices (matrix split creates sufficient work)
+    constexpr rocblas_int MAX_N_FOR_BIG_BATCH = 128;
+
+    return (n < MAX_N_FOR_BIG_BATCH) && (batch_count > BIG_BATCH_TO_N_RATIO * n);
 }
 
 template <rocblas_int DIM_X, typename T, typename TConstPtr, typename TPtr>
@@ -811,9 +824,43 @@ rocblas_status rocblas_internal_trsv_substitution_template(rocblas_handle    han
     if(!n || !batch_count)
         return rocblas_status_success;
 
-    // Temporarily change the thread's default device ID to the handle's device ID
-    // cppcheck-suppress unreadVariable
-    auto saved_device_id = handle->push_device_id();
+    // Check if we should use the z-batched kernel
+    if(should_use_big_batch_kernel(n, batch_count))
+    {
+        // TODO: Select block size based on data type requires further tuning
+        constexpr rocblas_int SDCTRSV_BB_NB = 4;
+        constexpr rocblas_int ZTRSV_BB_NB   = 4;
+
+#define TRSV_BATCHED_TEMPLATE_PARAMS                                                       \
+    handle, uplo, transA, diag, n, dA, offset_A, lda, stride_A, alpha, dx, offset_x, incx, \
+        stride_x, batch_count, w_completed_sec
+
+        // Use z-dimension batched kernel for high batch count scenarios
+        if constexpr(std::is_same_v<T, float>)
+        {
+            return rocblas_internal_trsv_substitution_big_batch_template<SDCTRSV_BB_NB, T>(
+                TRSV_BATCHED_TEMPLATE_PARAMS);
+        }
+        else if constexpr(std::is_same_v<T, double>)
+        {
+            return rocblas_internal_trsv_substitution_big_batch_template<SDCTRSV_BB_NB, T>(
+                TRSV_BATCHED_TEMPLATE_PARAMS);
+        }
+        else if constexpr(std::is_same_v<T, rocblas_float_complex>)
+        {
+            return rocblas_internal_trsv_substitution_big_batch_template<SDCTRSV_BB_NB, T>(
+                TRSV_BATCHED_TEMPLATE_PARAMS);
+        }
+        else if constexpr(std::is_same_v<T, rocblas_double_complex>)
+        {
+            return rocblas_internal_trsv_substitution_big_batch_template<ZTRSV_BB_NB, T>(
+                TRSV_BATCHED_TEMPLATE_PARAMS);
+        }
+
+#undef TRSV_BATCHED_TEMPLATE_PARAMS
+
+        return rocblas_status_internal_error;
+    }
 
     offset_x = incx < 0 ? offset_x + incx * (1 - n) : offset_x;
 
@@ -987,14 +1034,12 @@ rocblas_status rocblas_internal_trsv_substitution_template(rocblas_handle    han
             }
         }
     }
+
 #undef TRSV_TEMPLATE_PARAMS
 
     return rocblas_status_success;
 }
 
-#define TRSV_TEMPLATE_PARAMS                                                                 \
-    handle, uplo, transA, diag, n, dA, offset_A, lda, stride_A, nullptr, dx, offset_x, incx, \
-        stride_x, batch_count, w_completed_sec
 template <typename T>
 ROCBLAS_INTERNAL_EXPORT_NOINLINE rocblas_status
     rocblas_internal_trsv_template(rocblas_handle    handle,
@@ -1013,6 +1058,10 @@ ROCBLAS_INTERNAL_EXPORT_NOINLINE rocblas_status
                                    rocblas_int       batch_count,
                                    rocblas_int*      w_completed_sec)
 {
+#define TRSV_TEMPLATE_PARAMS                                                                 \
+    handle, uplo, transA, diag, n, dA, offset_A, lda, stride_A, nullptr, dx, offset_x, incx, \
+        stride_x, batch_count, w_completed_sec
+
     if constexpr(std::is_same_v<T, float>)
         return rocblas_internal_trsv_substitution_template<ROCBLAS_SDCTRSV_NB, T>(
             TRSV_TEMPLATE_PARAMS);
@@ -1027,6 +1076,8 @@ ROCBLAS_INTERNAL_EXPORT_NOINLINE rocblas_status
             TRSV_TEMPLATE_PARAMS);
 
     return rocblas_status_internal_error;
+
+#undef TRSV_TEMPLATE_PARAMS
 }
 
 template <typename T>
@@ -1047,23 +1098,27 @@ ROCBLAS_INTERNAL_EXPORT_NOINLINE rocblas_status
                                            rocblas_int       batch_count,
                                            rocblas_int*      w_completed_sec)
 {
+#define TRSV_BATCHED_TEMPLATE_PARAMS                                                         \
+    handle, uplo, transA, diag, n, dA, offset_A, lda, stride_A, nullptr, dx, offset_x, incx, \
+        stride_x, batch_count, w_completed_sec
+
     if constexpr(std::is_same_v<T, float>)
         return rocblas_internal_trsv_substitution_template<ROCBLAS_SDCTRSV_NB, T>(
-            TRSV_TEMPLATE_PARAMS);
+            TRSV_BATCHED_TEMPLATE_PARAMS);
     else if constexpr(std::is_same_v<T, double>)
         return rocblas_internal_trsv_substitution_template<ROCBLAS_SDCTRSV_NB, T>(
-            TRSV_TEMPLATE_PARAMS);
+            TRSV_BATCHED_TEMPLATE_PARAMS);
     else if constexpr(std::is_same_v<T, rocblas_float_complex>)
         return rocblas_internal_trsv_substitution_template<ROCBLAS_SDCTRSV_NB, T>(
-            TRSV_TEMPLATE_PARAMS);
+            TRSV_BATCHED_TEMPLATE_PARAMS);
     else if constexpr(std::is_same_v<T, rocblas_double_complex>)
         return rocblas_internal_trsv_substitution_template<ROCBLAS_ZTRSV_NB, T>(
-            TRSV_TEMPLATE_PARAMS);
+            TRSV_BATCHED_TEMPLATE_PARAMS);
+
+#undef TRSV_BATCHED_TEMPLATE_PARAMS
 
     return rocblas_status_internal_error;
 }
-
-#undef TRSV_TEMPLATE_PARAMS
 
 template <typename T, typename U>
 rocblas_status rocblas_internal_trsv_check_numerics(const char*       function_name,

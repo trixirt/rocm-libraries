@@ -74,17 +74,17 @@ private:
         attached_handle->EnableProfiling(false);
         start = miopen::make_hip_event();
         stop  = miopen::make_hip_event();
-        hipEventRecord(start.get(), attached_handle->GetStream());
+        (void)hipEventRecord(start.get(), attached_handle->GetStream());
 #endif
     }
 
     void RNNProfilingEnd()
     {
 #if MIOPEN_BACKEND_HIP
-        hipEventRecord(stop.get(), attached_handle->GetStream());
-        hipEventSynchronize(stop.get());
+        (void)hipEventRecord(stop.get(), attached_handle->GetStream());
+        (void)hipEventSynchronize(stop.get());
         float eventTime_mS = 0;
-        hipEventElapsedTime(&eventTime_mS, start.get(), stop.get());
+        (void)hipEventElapsedTime(&eventTime_mS, start.get(), stop.get());
 
         attached_handle->EnableProfiling(true);
         attached_handle->ResetKernelTime();
@@ -104,10 +104,10 @@ private:
 inline miopen::HipEventPtr make_hip_fast_event()
 {
     hipEvent_t result = nullptr;
-    hipEventCreateWithFlags(&result, hipEventDisableTiming);
+    (void)hipEventCreateWithFlags(&result, hipEventDisableTiming);
     return miopen::HipEventPtr{result};
 }
-#endif //#if MIOPEN_BACKEND_HIP
+#endif // #if MIOPEN_BACKEND_HIP
 
 void LSTMForwardHiddenStateUpdate(const Handle& handle,
                                   miopenDataType_t rnn_data_type,
@@ -119,8 +119,6 @@ void LSTMForwardHiddenStateUpdate(const Handle& handle,
                                   int use_batch,
                                   int hy_h,
                                   int hy_stride,
-                                  int wei_len,
-                                  int wei_stride,
                                   ConstData_t cx,
                                   std::size_t cx_offset,
                                   Data_t reserve_space,
@@ -133,6 +131,30 @@ void LSTMForwardHiddenStateUpdate(const Handle& handle,
                                   std::size_t activ_cell_offset,
                                   std::size_t hidden_offset);
 
+void RNNFusedLSTMInferenceLoop(const Handle& handle,
+                               Data_t workSpace,
+                               ConstData_t w,
+                               ConstData_t cx,
+                               ConstData_t hx,
+                               Data_t hy,
+                               Data_t cy,
+                               int seqLen,
+                               int max_batch,
+                               int hy_h,
+                               int hy_stride,
+                               int wei_len,
+                               int hid_off,
+                               int uni_stride,
+                               int bi,
+                               int ri,
+                               int reverse,
+                               std::size_t wei_shift_dir,
+                               std::size_t hcx_offset,
+                               bool use_cx,
+                               bool use_hx,
+                               bool use_hy,
+                               bool use_cy);
+
 void LSTMBackwardHiddenStateUpdate(const Handle& handle,
                                    miopenDataType_t rnn_data_type,
                                    bool is_seq_begin,
@@ -144,8 +166,6 @@ void LSTMBackwardHiddenStateUpdate(const Handle& handle,
                                    int use_batch2,
                                    int hy_h,
                                    int hy_stride,
-                                   int wei_len,
-                                   int wei_stride,
                                    ConstData_t cx,
                                    std::size_t cx_offset,
                                    Data_t reserve_space,

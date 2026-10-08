@@ -12,14 +12,19 @@ rocWMMA is a C++ header library for accelerating mixed-precision matrix multiply
 It leverages specialized GPU matrix cores on the latest AMD discrete GPUs.
 For more information, see :doc:`What is rocWMMA? <./what-is-rocwmma>`
 
-The rocWMMA public repository is located at `<https://github.com/ROCm/rocWMMA>`_.
+The rocWMMA public repository is located at `<https://github.com/ROCm/rocm-libraries/tree/develop/projects/rocwmma>`_.
+
+.. note::
+
+   The rocWMMA repository for ROCm 7.1.1 and earlier is located at `<https://github.com/ROCm/rocWMMA>`_.
 
 .. grid:: 2
   :gutter: 3
 
   .. grid-item-card:: Install
 
-    * :doc:`Installation guide <./install/installation>`
+    * :doc:`Install rocWMMA <./install/installation>`
+    * :doc:`Build from source <./install/source-build>`
 
   .. grid-item-card:: Conceptual
 
@@ -28,11 +33,12 @@ The rocWMMA public repository is located at `<https://github.com/ROCm/rocWMMA>`_
 
   .. grid-item-card:: Examples
 
-    * `Samples <https://github.com/ROCm/rocWMMA/tree/develop/samples>`_ 
+    * `Samples <https://github.com/ROCm/rocm-libraries/tree/develop/projects/rocwmma/samples>`_ 
 
   .. grid-item-card:: API reference
 
     * :doc:`API reference guide <./api-reference/api-reference-guide>`
+    * :doc:`Precision support <./api-reference/data-type-support>`
     
 To contribute to the documentation, see `Contributing to ROCm <https://rocm.docs.amd.com/en/latest/contribute/contributing.html>`_.
 

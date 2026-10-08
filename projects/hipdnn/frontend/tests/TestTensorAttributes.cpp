@@ -1,17 +1,20 @@
 // Copyright © Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier:  MIT
 
-#include <flatbuffers/flatbuffers.h>
 #include <gtest/gtest.h>
+#include <hipdnn_data_sdk/utilities/StringUtil.hpp>
 #include <hipdnn_frontend/attributes/TensorAttributes.hpp>
-#include <hipdnn_sdk/data_objects/tensor_attributes_generated.h>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <variant>
 
 using namespace hipdnn_frontend;
 using namespace hipdnn_frontend::graph;
 
 TEST(TestTensorAttributes, DefaultConstructor)
 {
-    TensorAttributes tensor;
+    const TensorAttributes tensor;
     EXPECT_EQ(tensor.get_uid(), 0);
     EXPECT_EQ(tensor.get_name(), "");
     EXPECT_EQ(tensor.get_data_type(), DataType::NOT_SET);
@@ -32,6 +35,22 @@ TEST(TestTensorAttributes, SetAndGetUid)
     tensor.clear_uid();
     EXPECT_EQ(tensor.get_uid(), 0);
     EXPECT_FALSE(tensor.has_uid());
+}
+
+// cuDNN-parity nested alias: consumer source spells variant-pack map keys as
+// TensorAttributes::uid_t, and it must be the same type get_uid() returns.
+TEST(TestTensorAttributes, UidTypeAliasMatchesUidAccessors)
+{
+    static_assert(std::is_same_v<TensorAttributes::uid_t, int64_t>);
+    static_assert(std::is_same_v<TensorAttributes::uid_t,
+                                 decltype(std::declval<TensorAttributes>().get_uid())>);
+
+    std::unordered_map<TensorAttributes::uid_t, void*> variantPack;
+    TensorAttributes tensor;
+    tensor.set_uid(7);
+    variantPack.emplace(tensor.get_uid(), nullptr);
+
+    EXPECT_EQ(variantPack.count(7), 1U);
 }
 
 TEST(TestTensorAttributes, SetAndGetName)
@@ -98,234 +117,312 @@ TEST(TestTensorAttributes, SetFromGraphAttributes)
     EXPECT_EQ(tensor.get_data_type(), DataType::HALF);
 }
 
-TEST(TestTensorAttributes, PackAttributes)
+TEST(TestTensorAttributes, ValidateSucceedsOnValueTensor)
 {
-    TensorAttributes tensor;
-    tensor.set_uid(1)
-        .set_name("PackedTensor")
-        .set_data_type(DataType::FLOAT)
-        .set_stride({1, 2, 3})
-        .set_dim({4, 5, 6})
-        .set_is_virtual(true);
-
-    flatbuffers::FlatBufferBuilder builder;
-    auto packed = tensor.pack_attributes(builder);
-    builder.Finish(packed);
-
-    auto bufferPointer = builder.GetBufferPointer();
-    auto tensorAttributesFlatbuffer
-        = flatbuffers::GetRoot<hipdnn_sdk::data_objects::TensorAttributes>(bufferPointer);
-    auto unpacked = std::unique_ptr<hipdnn_sdk::data_objects::TensorAttributesT>(
-        tensorAttributesFlatbuffer->UnPack());
-
-    EXPECT_EQ(unpacked->uid, 1);
-    EXPECT_EQ(unpacked->name, "PackedTensor");
-    EXPECT_EQ(unpacked->data_type, hipdnn_sdk::data_objects::DataType::FLOAT);
-    EXPECT_EQ(unpacked->strides, std::vector<int64_t>({1, 2, 3}));
-    EXPECT_EQ(unpacked->dims, std::vector<int64_t>({4, 5, 6}));
-    EXPECT_TRUE(unpacked->virtual_);
+    const TensorAttributes tensor(1.f);
+    EXPECT_EQ(tensor.validate(), Error(ErrorCode::OK, ""));
 }
 
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveValidCase)
+TEST(TestTensorAttributes, ValidateSucceedsOnVirtualTensor)
 {
     TensorAttributes tensor;
-    tensor.set_dim({4, 5, 6});
-    tensor.set_stride({30, 6, 1});
-    EXPECT_TRUE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveEmptyDims)
-{
-    TensorAttributes tensor;
-    // No dimensions set
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveZeroDimension)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({4, 0, 6}); // Zero in middle dimension
-    tensor.set_stride({0, 6, 1});
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveNegativeDimension)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({4, -5, 6}); // Negative dimension
-    tensor.set_stride({30, 6, 1});
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveZeroStride)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({4, 5, 6});
-    tensor.set_stride({30, 0, 1}); // Zero stride
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveNegativeStride)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({4, 5, 6});
-    tensor.set_stride({30, -6, 1}); // Negative stride
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveStrideSizeMismatch)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({4, 5, 6});
-    tensor.set_stride({30, 6}); // Only 2 strides for 3 dimensions
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveMoreStridesThanDims)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({4, 5});
-    tensor.set_stride({20, 5, 1}); // 3 strides for 2 dimensions
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveAllZeroDims)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({0, 0, 0});
-    tensor.set_stride({0, 0, 0});
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveAllNegativeDims)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({-1, -2, -3});
-    tensor.set_stride({6, 3, 1});
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveMixedInvalidValues)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({4, 0, -6}); // Mix of valid, zero, and negative
-    tensor.set_stride({0, -6, 1}); // Mix of zero, negative, and valid
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveSingleDimension)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({10});
+    tensor.set_dim({1});
     tensor.set_stride({1});
-    EXPECT_TRUE(tensor.validate_dims_and_strides_set_and_positive());
+    tensor.set_is_virtual(true);
+    tensor.set_data_type(DataType::FLOAT);
+
+    EXPECT_EQ(tensor.validate(), Error(ErrorCode::OK, ""));
 }
 
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveSingleZeroDimension)
+TEST(TestTensorAttributes, ValidateFailsOnVirtualValueTensor)
 {
-    TensorAttributes tensor;
-    tensor.set_dim({0});
+    TensorAttributes tensor(1.f);
+    tensor.set_dim({1});
     tensor.set_stride({1});
-    EXPECT_FALSE(tensor.validate_dims_and_strides_set_and_positive());
+    tensor.set_is_virtual(true);
+
+    EXPECT_EQ(tensor.validate(),
+              Error(ErrorCode::INVALID_VALUE, "Tensor  cannot be virtual and pass by value"));
 }
 
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositiveLargeDimensions)
+TEST(TestTensorAttributes, ValidateFailsOnDifferentDimAndStrideSize)
 {
     TensorAttributes tensor;
-    tensor.set_dim({1024, 2048, 4096});
-    tensor.set_stride({8388608, 4096, 1});
-    EXPECT_TRUE(tensor.validate_dims_and_strides_set_and_positive());
+    tensor.set_dim({1});
+    tensor.set_stride({1, 2});
+    tensor.set_data_type(DataType::FLOAT);
+
+    EXPECT_EQ(tensor.validate(),
+              Error(ErrorCode::INVALID_VALUE, "Tensor  dims and strides have different sizes"));
 }
 
-TEST(TestTensorAttributes, ValidateDimsAndStridesSetAndPositive5DValidCase)
+TEST(TestTensorAttributes, ValidateFailsOnEmptyDims)
 {
     TensorAttributes tensor;
-    tensor.set_dim({2, 3, 4, 5, 6});
-    tensor.set_stride({360, 120, 30, 6, 1});
-    EXPECT_TRUE(tensor.validate_dims_and_strides_set_and_positive());
+    tensor.set_data_type(DataType::FLOAT);
+
+    EXPECT_EQ(tensor.validate(),
+              Error(ErrorCode::ATTRIBUTE_NOT_SET, "Tensor  dims must be non-empty"));
 }
 
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveValidCase)
+TEST(TestTensorAttributes, ValidateFailsOnNonPositiveDimension)
 {
-    TensorAttributes tensor;
-    tensor.set_dim({4, 5, 6});
-    EXPECT_TRUE(tensor.validate_dims_set_and_positive());
+    const std::vector<std::vector<int64_t>> testDims
+        = {{0, 1}, {1, 0, 1}, {-1, 1, 1}, {1, 1, 1, -1}};
+
+    for(const auto& dim : testDims)
+    {
+        TensorAttributes tensor;
+        tensor.set_dim(dim);
+        tensor.set_stride(dim);
+        tensor.set_data_type(DataType::FLOAT);
+
+        EXPECT_EQ(tensor.validate(),
+                  Error(ErrorCode::INVALID_VALUE, "Tensor  must have only positive dimensions"))
+            << "Dims: " << hipdnn_data_sdk::utilities::vecToString(dim);
+    }
 }
 
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveEmptyDims)
-{
-    TensorAttributes tensor;
-    // No dimensions set
-    EXPECT_FALSE(tensor.validate_dims_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveZeroDimension)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({4, 0, 6}); // Zero in middle dimension
-    EXPECT_FALSE(tensor.validate_dims_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveNegativeDimension)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({4, -5, 6}); // Negative dimension
-    EXPECT_FALSE(tensor.validate_dims_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveAllZeroDims)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({0, 0, 0});
-    EXPECT_FALSE(tensor.validate_dims_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveAllNegativeDims)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({-1, -2, -3});
-    EXPECT_FALSE(tensor.validate_dims_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveMixedInvalidValues)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({4, 0, -6}); // Mix of valid, zero, and negative
-    EXPECT_FALSE(tensor.validate_dims_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveSingleDimension)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({10});
-    EXPECT_TRUE(tensor.validate_dims_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveSingleZeroDimension)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({0});
-    EXPECT_FALSE(tensor.validate_dims_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveLargeDimensions)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({1024, 2048, 4096});
-    EXPECT_TRUE(tensor.validate_dims_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsSetAndPositive5DValidCase)
-{
-    TensorAttributes tensor;
-    tensor.set_dim({2, 3, 4, 5, 6});
-    EXPECT_TRUE(tensor.validate_dims_set_and_positive());
-}
-
-TEST(TestTensorAttributes, ValidateDimsSetAndPositiveWithStridesIgnored)
+TEST(TestTensorAttributes, ValidateDataType)
 {
     TensorAttributes tensor;
     tensor.set_dim({4, 5, 6});
-    tensor.set_stride({0, -1, 2}); // Invalid strides should be ignored
-    EXPECT_TRUE(tensor.validate_dims_set_and_positive());
+    tensor.set_stride({0, 1, 2});
+
+    const std::vector<std::pair<DataType, ErrorCode>> expectedResults
+        = {{DataType::NOT_SET, ErrorCode::ATTRIBUTE_NOT_SET},
+           {DataType::FLOAT, ErrorCode::OK},
+           {DataType::HALF, ErrorCode::OK},
+           {DataType::BFLOAT16, ErrorCode::OK},
+           {DataType::DOUBLE, ErrorCode::OK},
+           {DataType::UINT8, ErrorCode::OK},
+           {DataType::INT32, ErrorCode::OK},
+           {DataType::INT8, ErrorCode::OK},
+           {DataType::FP8_E4M3, ErrorCode::OK},
+           {DataType::FP8_E5M2, ErrorCode::OK},
+           {DataType::FP8_E8M0, ErrorCode::OK},
+           {DataType::FP4_E2M1, ErrorCode::OK},
+           {DataType::INT4, ErrorCode::OK},
+           {DataType::FP6_E2M3, ErrorCode::OK},
+           {DataType::FP6_E3M2, ErrorCode::OK},
+           {DataType::INT64, ErrorCode::OK},
+           {DataType::BOOLEAN, ErrorCode::OK}};
+
+    for(auto [dataType, errorCode] : expectedResults)
+    {
+        tensor.set_data_type(dataType);
+        auto result = tensor.validate();
+        EXPECT_EQ(result.code, errorCode) << "For " + std::string(to_string(dataType));
+    }
+}
+
+TEST(TestTensorAttributes, SetAndGetRaggedOffset)
+{
+    TensorAttributes tensor;
+    EXPECT_FALSE(tensor.has_ragged_offset());
+    EXPECT_EQ(tensor.get_ragged_offset(), nullptr);
+
+    auto aux = std::make_shared<TensorAttributes>();
+    aux->set_uid(99);
+    tensor.set_ragged_offset(aux);
+    EXPECT_TRUE(tensor.has_ragged_offset());
+    EXPECT_EQ(tensor.get_ragged_offset()->get_uid(), 99);
+
+    tensor.set_ragged_offset(nullptr);
+    EXPECT_FALSE(tensor.has_ragged_offset());
+    EXPECT_EQ(tensor.get_ragged_offset(), nullptr);
+}
+
+TEST(TestTensorAttributes, SetAndGetAlignment)
+{
+    TensorAttributes tensor;
+    EXPECT_EQ(tensor.get_alignment(), 16);
+
+    tensor.set_alignment(64);
+    EXPECT_EQ(tensor.get_alignment(), 64);
+
+    tensor.set_alignment(1);
+    EXPECT_EQ(tensor.get_alignment(), 1);
+}
+
+TEST(TestTensorAttributes, ValidateFailsOnAlignmentZero)
+{
+    TensorAttributes tensor;
+    tensor.set_dim({4, 1, 1, 1});
+    tensor.set_stride({1, 1, 1, 1});
+    tensor.set_data_type(DataType::FLOAT);
+    tensor.set_alignment(0);
+    EXPECT_EQ(tensor.validate().code, ErrorCode::INVALID_VALUE);
+}
+
+TEST(TestTensorAttributes, ValidateFailsOnAlignmentNegative)
+{
+    TensorAttributes tensor;
+    tensor.set_dim({4, 1, 1, 1});
+    tensor.set_stride({1, 1, 1, 1});
+    tensor.set_data_type(DataType::FLOAT);
+    tensor.set_alignment(-1);
+    EXPECT_EQ(tensor.validate().code, ErrorCode::INVALID_VALUE);
+}
+
+TEST(TestTensorAttributes, ValidateSucceedsWithDefaultAlignment)
+{
+    TensorAttributes tensor;
+    tensor.set_dim({4, 1, 1, 1});
+    tensor.set_stride({1, 1, 1, 1});
+    tensor.set_data_type(DataType::FLOAT);
+    EXPECT_EQ(tensor.validate(), Error(ErrorCode::OK, ""));
+}
+
+TEST(TestTensorAttributes, RaggedOffsetMethodChainingReturnsThis)
+{
+    TensorAttributes tensor;
+    auto aux = std::make_shared<TensorAttributes>();
+    const TensorAttributes& ref = tensor.set_ragged_offset(aux);
+    EXPECT_EQ(&ref, &tensor);
+
+    const TensorAttributes& ref2 = tensor.set_alignment(32);
+    EXPECT_EQ(&ref2, &tensor);
+}
+
+TEST(TestTensorAttributes, SetAndGetRaggedOffsetMultiplier)
+{
+    TensorAttributes tensor;
+    EXPECT_EQ(tensor.get_ragged_offset_multiplier(), 1);
+    EXPECT_FALSE(tensor.has_ragged_offset_multiplier());
+
+    tensor.set_ragged_offset_multiplier(512);
+    EXPECT_EQ(tensor.get_ragged_offset_multiplier(), 512);
+    EXPECT_TRUE(tensor.has_ragged_offset_multiplier());
+
+    tensor.set_ragged_offset_multiplier(1);
+    EXPECT_FALSE(tensor.has_ragged_offset_multiplier());
+
+    const TensorAttributes& ref = tensor.set_ragged_offset_multiplier(64);
+    EXPECT_EQ(&ref, &tensor);
+}
+
+TEST(TestTensorAttributes, ValidateFailsOnRaggedOffsetMultiplierBelowOne)
+{
+    TensorAttributes tensor;
+    tensor.set_dim({4, 1, 1, 1});
+    tensor.set_stride({1, 1, 1, 1});
+    tensor.set_data_type(DataType::FLOAT);
+    auto aux = std::make_shared<TensorAttributes>();
+    tensor.set_ragged_offset(aux);
+    tensor.set_ragged_offset_multiplier(0);
+    EXPECT_EQ(tensor.validate().code, ErrorCode::INVALID_VALUE);
+}
+
+TEST(TestTensorAttributes, ValidateFailsOnMultiplierWithoutRaggedOffset)
+{
+    TensorAttributes tensor;
+    tensor.set_dim({4, 1, 1, 1});
+    tensor.set_stride({1, 1, 1, 1});
+    tensor.set_data_type(DataType::FLOAT);
+    tensor.set_ragged_offset_multiplier(512);
+    EXPECT_EQ(tensor.validate().code, ErrorCode::INVALID_VALUE);
+}
+
+TEST(TestTensorAttributes, ValidateSucceedsWithMultiplierAndRaggedOffset)
+{
+    TensorAttributes tensor;
+    tensor.set_dim({4, 1, 1, 1});
+    tensor.set_stride({1, 1, 1, 1});
+    tensor.set_data_type(DataType::FLOAT);
+    auto aux = std::make_shared<TensorAttributes>();
+    tensor.set_ragged_offset(aux);
+    tensor.set_ragged_offset_multiplier(512);
+    EXPECT_EQ(tensor.validate(), Error(ErrorCode::OK, ""));
+}
+
+TEST(TestTensorAttributes, ValidateSucceedsWithDefaultRaggedOffsetMultiplier)
+{
+    TensorAttributes tensor;
+    tensor.set_dim({4, 1, 1, 1});
+    tensor.set_stride({1, 1, 1, 1});
+    tensor.set_data_type(DataType::FLOAT);
+    EXPECT_EQ(tensor.validate(), Error(ErrorCode::OK, ""));
+}
+TEST(TestTensorAttributes, ValidateSucceedsOnRuntimeWithDefaultTensor)
+{
+    // flag true + value present; set_value seeded dims/strides/data_type.
+    TensorAttributes tensor(1.F);
+    tensor.set_is_pass_by_value(true);
+    ASSERT_TRUE(tensor.get_is_runtime_pass_by_value());
+    EXPECT_EQ(tensor.validate(), Error(ErrorCode::OK, ""));
+}
+
+TEST(TestTensorAttributes, ValidateSucceedsOnRuntimeUserSuppliedTensor)
+{
+    // flag true + value cleared; dims/strides/data_type survive set_value seeding.
+    TensorAttributes tensor(1.F);
+    tensor.set_as_runtime_parameter();
+    ASSERT_TRUE(tensor.get_is_runtime_pass_by_value());
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(tensor.get_value_variant()));
+    EXPECT_EQ(tensor.validate(), Error(ErrorCode::OK, ""));
+}
+
+TEST(TestTensorAttributes, ValidateFailsOnVirtualRuntimePassByValueTensor)
+{
+    // virtual + runtime flag (no stored value) is the flag-exclusion case.
+    TensorAttributes tensor;
+    tensor.set_dim({1});
+    tensor.set_stride({1});
+    tensor.set_data_type(DataType::FLOAT);
+    tensor.set_as_runtime_parameter();
+    tensor.set_is_virtual(true);
+
+    EXPECT_EQ(
+        tensor.validate(),
+        Error(ErrorCode::INVALID_VALUE, "Tensor  cannot be virtual and runtime pass by value"));
+}
+
+TEST(TestTensorAttributes, TensorLogicalAndStrictEquality)
+{
+    TensorAttributes tensorA;
+    tensorA.set_dim({1, 64, 28, 28});
+    tensorA.set_stride({50176, 784, 28, 1});
+    tensorA.set_data_type(DataType::HALF);
+    tensorA.set_uid(1);
+    tensorA.set_name("Tensor_A");
+
+    TensorAttributes tensorB;
+    tensorB.set_dim({1, 64, 28, 28});
+    tensorB.set_stride({50176, 784, 28, 1});
+    tensorB.set_data_type(DataType::HALF);
+    tensorB.set_uid(2);
+    tensorB.set_name("Tensor_B");
+
+    EXPECT_TRUE(tensorA.logicallyEquals(tensorB));
+    EXPECT_TRUE(tensorB.logicallyEquals(tensorA));
+
+    EXPECT_FALSE(tensorA == tensorB);
+    EXPECT_TRUE(tensorA != tensorB);
+
+    tensorB.set_name("Tensor_A");
+    tensorB.set_uid(1);
+    EXPECT_TRUE(tensorA == tensorB);
+    EXPECT_FALSE(tensorA != tensorB);
+
+    tensorB.set_is_virtual(true);
+    EXPECT_FALSE(tensorA.logicallyEquals(tensorB));
+    EXPECT_FALSE(tensorA == tensorB);
+
+    const TensorAttributes scalarA(2.5f);
+    const TensorAttributes scalarB(2.5f);
+    const TensorAttributes scalarC(3.5f);
+
+    EXPECT_TRUE(scalarA.logicallyEquals(scalarB));
+    EXPECT_FALSE(scalarA.logicallyEquals(scalarC));
+
+    // Same value, different pass-by-value mode: runtime-with-default (floors the
+    // provider at 1.2.0) vs. compile-time constant (1.0.0) are not interchangeable
+    // even though the baked value matches.
+    const TensorAttributes runtimeWithDefault(2.5f, ScalarType::RUNTIME_PARAM);
+    const TensorAttributes compileTimeConstant(2.5f, ScalarType::COMPILE_TIME_CONST);
+    EXPECT_TRUE(runtimeWithDefault.get_is_runtime_pass_by_value());
+    EXPECT_FALSE(compileTimeConstant.get_is_runtime_pass_by_value());
+    EXPECT_FALSE(runtimeWithDefault.logicallyEquals(compileTimeConstant));
+    EXPECT_FALSE(compileTimeConstant.logicallyEquals(runtimeWithDefault));
 }

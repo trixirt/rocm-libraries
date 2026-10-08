@@ -1,4 +1,4 @@
-// Copyright (C) 2016 - 2022 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2016 - 2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -21,25 +21,15 @@
 #ifndef TRANSFORM_H
 #define TRANSFORM_H
 
-#include "../../../shared/rocfft_hip.h"
+#include "exec_info.h"
 
-struct rocfft_execution_info_t
-{
-    void*       workBuffer;
-    size_t      workBufferSize;
-    hipStream_t rocfft_stream = 0; // by default it is stream 0
-    rocfft_execution_info_t()
-        : workBuffer(nullptr)
-        , workBufferSize(0)
-    {
-    }
-    UserCallbacks callbacks;
-};
+struct rocfft_plan_t;
 
-void TransformPowX(const ExecPlan&       execPlan,
-                   void*                 in_buffer[],
-                   void*                 out_buffer[],
-                   rocfft_execution_info info,
-                   size_t                multiPlanIdx);
+void TransformPowX(const rocfft_plan_t&                  plan,
+                   const ExecPlan&                       execPlan,
+                   void*                                 in_buffer[],
+                   void*                                 out_buffer[],
+                   const rocfft_execution_info_internal& info,
+                   size_t                                multiPlanIdx);
 
 #endif // TRANSFORM_H

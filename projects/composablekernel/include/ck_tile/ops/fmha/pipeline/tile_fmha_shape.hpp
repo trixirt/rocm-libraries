@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2018-2025, Advanced Micro Devices, Inc. All rights reserved.
 
 #pragma once
 
@@ -12,6 +12,8 @@ static CK_TILE_HOST_DEVICE constexpr index_t ceil_to_qualified_tile_length()
 {
     if constexpr(Headdim == 48)
         return 48;
+    else if constexpr(Headdim == 80)
+        return 96;
     else if constexpr(Headdim == 96)
         return 128;
     else if constexpr(Headdim == 160)
@@ -25,12 +27,33 @@ static CK_TILE_HOST_DEVICE constexpr index_t ceil_to_qualified_tile_length()
                       "only Headdim of 48, 96, 160, 192 and power-of-two is supported");
 };
 
+// TDM stores the head dim in LDS at its true length (no generic rounding) so its
+// LDS bank-conflict padding can activate for non-power-of-two head dims. 96 and
+// 160 opt in here; everything else (including 80 -> 96, since 80 % kK0 != 0)
+// defers to the shared ceil_to_qualified_tile_length above. Keep this local to
+// TDM: the generic pipelines (qr / qr_async / splitkv / prefill) still need the
+// rounded length and must keep reading the shared function.
+template <index_t Headdim>
+static CK_TILE_HOST_DEVICE constexpr index_t tdm_ceil_to_qualified_tile_length()
+{
+    if constexpr(Headdim == 96)
+        return 96;
+    else if constexpr(Headdim == 160)
+        return 160;
+    else
+        return ceil_to_qualified_tile_length<Headdim>();
+};
+
 template <typename BlockTile_, // sequence<...
           typename Gemm0BlockWarps_,
           typename Gemm0WarpTile_,
           typename Gemm1BlockWarps_,
           typename Gemm1WarpTile_,
-          bool IsVLayoutRowMajor_>
+          bool IsVLayoutRowMajor_,
+          // When true (qr_tdm only), kSubQKHeaddim uses the TDM ceil so 96/160 keep
+          // their true LDS length; generic pipelines leave this false and get the
+          // shared rounded length.
+          bool UseTdmCeil_ = false>
 struct TileFmhaShape
 {
     using BlockTile       = remove_cvref_t<BlockTile_>;
@@ -40,9 +63,9 @@ struct TileFmhaShape
     using Gemm1WarpTile   = remove_cvref_t<Gemm1WarpTile_>;
 
     static constexpr index_t NumGemm0Warps =
-        reduce_on_sequence(Gemm0BlockWarps{}, multiplies{}, number<1>{});
+        reduce_on_sequence(Gemm0BlockWarps{}, multiplies<>{}, number<1>{});
     static constexpr index_t NumGemm1Warps =
-        reduce_on_sequence(Gemm1BlockWarps{}, multiplies{}, number<1>{});
+        reduce_on_sequence(Gemm1BlockWarps{}, multiplies<>{}, number<1>{});
     static_assert(NumGemm1Warps % NumGemm0Warps == 0);
 
     static constexpr index_t NumWarps = max(NumGemm0Warps, NumGemm1Warps);
@@ -55,9 +78,11 @@ struct TileFmhaShape
     static constexpr index_t kQKHeaddim =
         BlockTile::at(number<5>{}); // total length of K0, used for pipeline that need load Q at
                                     // once (or repeately load Q as a whole tile)
-    static_assert(kQKHeaddim % kK0 == 0, "kQKHeaddim should be divisible by kK0");
+    static_assert(kQKHeaddim % kK0 == 0, "kQKHeaddim must be divisible by kK0!");
 
-    static constexpr index_t kSubQKHeaddim = ceil_to_qualified_tile_length<kQKHeaddim>();
+    static constexpr index_t kSubQKHeaddim = UseTdmCeil_
+                                                 ? tdm_ceil_to_qualified_tile_length<kQKHeaddim>()
+                                                 : ceil_to_qualified_tile_length<kQKHeaddim>();
 
     // v, rowmajor : seqlen*hdim, colmajor : hdim*seqlen
     static constexpr bool IsVLayoutRowMajor = IsVLayoutRowMajor_;
@@ -93,10 +118,10 @@ struct TileFmhaBwdShape
     using Gemm4WarpTile   = remove_cvref_t<Gemm4WarpTile_>;
 
     static constexpr index_t NumWarps =
-        reduce_on_sequence(Gemm0BlockWarps{}, multiplies{}, number<1>{});
+        reduce_on_sequence(Gemm0BlockWarps{}, multiplies<>{}, number<1>{});
 
-    static_assert(NumWarps == reduce_on_sequence(Gemm1BlockWarps{}, multiplies{}, number<1>{}) &&
-                  NumWarps == reduce_on_sequence(Gemm4BlockWarps{}, multiplies{}, number<1>{}));
+    static_assert(NumWarps == reduce_on_sequence(Gemm1BlockWarps{}, multiplies<>{}, number<1>{}) &&
+                  NumWarps == reduce_on_sequence(Gemm4BlockWarps{}, multiplies<>{}, number<1>{}));
 
     static constexpr index_t kM0 = BlockTile::at(number<0>{}); // tile size along q seqlen
     static constexpr index_t kN0 = BlockTile::at(number<1>{}); // tile size along k seqlen

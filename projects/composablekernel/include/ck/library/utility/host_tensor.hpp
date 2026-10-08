@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2018-2025, Advanced Micro Devices, Inc. All rights reserved.
 
 #pragma once
 
@@ -23,8 +23,15 @@
 
 #include "ck/tensor_operation/gpu/device/tensor_layout.hpp"
 
+#if __clang_major__ >= 23
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlifetime-safety-intra-tu-suggestions"
+#pragma clang diagnostic ignored "-Wlifetime-safety-cross-tu-suggestions"
+#endif
+namespace ck {
+
 template <typename Range>
-std::ostream& LogRange(std::ostream& os, Range&& range, std::string delim)
+std::ostream& LogRange([[clang::lifetimebound]] std::ostream& os, Range&& range, std::string delim)
 {
     bool first = true;
     for(auto&& v : range)
@@ -296,9 +303,12 @@ struct HostTensorDescriptor
             if constexpr(!(std::is_same_v<ck::tensor_layout::gemm::RowMajor, Layout> ||
                            std::is_same_v<ck::tensor_layout::gemm::ColumnMajor, Layout>))
             {
-                std::cerr << "Only RowMajor and ColumnMajor layouts are supported for empty "
-                             "strides, got "
-                          << layout << ". Will calculate strides as RowMajor." << std::endl;
+                if(dbg)
+                {
+                    std::cerr << "Only RowMajor and ColumnMajor layouts are supported for empty "
+                                 "strides, got "
+                              << layout << ". Will calculate strides as RowMajor." << std::endl;
+                }
             }
 
             mStrides.clear();
@@ -441,9 +451,14 @@ struct HostTensorDescriptor
         {
             // TBD: implement verification for Conv layouts
             // For now, just print warning and return
-            std::cerr << "Warning: Tensor layout verification for ck::tensor_layout::convolution "
-                         "layouts is not supported yet. Skipping..."
-                      << std::endl;
+            if(dbg)
+            {
+
+                std::cerr
+                    << "Warning: Tensor layout verification for ck::tensor_layout::convolution "
+                       "layouts is not supported yet. Skipping..."
+                    << std::endl;
+            }
             return;
         }
         else
@@ -570,8 +585,9 @@ struct HostTensorDescriptor
         return std::inner_product(iss.begin(), iss.end(), mStrides.begin(), std::size_t{0});
     }
 
-    friend std::ostream& operator<<(std::ostream& os, const HostTensorDescriptor& desc);
-    friend std::ostream& operator<<(std::ostream& os, ChosenLayout tag);
+    friend std::ostream& operator<<([[clang::lifetimebound]] std::ostream& os,
+                                    const HostTensorDescriptor& desc);
+    friend std::ostream& operator<<([[clang::lifetimebound]] std::ostream& os, ChosenLayout tag);
 
     private:
     std::vector<std::size_t> mLens;
@@ -773,22 +789,45 @@ struct Tensor
     explicit Tensor(const Tensor<FromT>& other) : Tensor(other.template CopyAsType<T>())
     {
     }
-    void savetxt(std::string file_name, std::string dtype = "float")
+    void savetxt(std::string file_name, std::string dtype = "float", int line_length = 1)
     {
+        ignore = dtype;
         std::ofstream file(file_name);
 
+        int i = 0;
         if(file.is_open())
         {
             for(auto& itm : mData)
             {
-                if(dtype == "float")
-                    file << ck::type_convert<float>(itm) << std::endl;
-                else if(dtype == "int")
-                    file << ck::type_convert<int>(itm) << std::endl;
+                // TODO: type_convert don't support f4x2_pk_t, f8_t, bf8_t to int for now.
+                if constexpr(is_same_v<T, f4x2_pk_t>)
+                {
+                    file << ck::type_convert<float>(f4_t(itm.unpack(Number<0>{})));
+                    i++;
+                    file << ((i % line_length == 0) ? "\n" : ", ");
+                    file << ck::type_convert<float>(f4_t(itm.unpack(Number<1>{})));
+                    i++;
+                    file << ((i % line_length == 0) ? "\n" : ", ");
+                }
+                else if constexpr(is_same_v<T, f8_t> || is_same_v<T, bf8_t>)
+                {
+                    file << ck::type_convert<float>(itm);
+                    i++;
+                    file << ((i % line_length == 0) ? "\n" : ", ");
+                }
                 else
-                    // TODO: we didn't implement operator<< for all custom
-                    // data types, here fall back to float in case compile error
-                    file << ck::type_convert<float>(itm) << std::endl;
+                {
+                    if(dtype == "float")
+                        file << ck::type_convert<float>(itm);
+                    else if(dtype == "int")
+                        file << ck::type_convert<int>(itm);
+                    else
+                        // TODO: we didn't implement operator<< for all custom
+                        // data types, here fall back to float in case compile error
+                        file << ck::type_convert<float>(itm);
+                    i++;
+                    file << ((i % line_length == 0) ? "\n" : ", ");
+                }
             }
             file.close();
         }
@@ -818,6 +857,8 @@ struct Tensor
             return mDesc.GetElementSpaceSize();
         }
     }
+
+    bool empty() const { return mData.empty(); }
 
     std::size_t GetElementSpaceSizeInBytes() const { return sizeof(T) * GetElementSpaceSize(); }
 
@@ -1159,3 +1200,8 @@ struct Tensor
     Descriptor mDesc;
     Data mData;
 };
+
+} // namespace ck
+#if __clang_major__ >= 23
+#pragma clang diagnostic pop
+#endif

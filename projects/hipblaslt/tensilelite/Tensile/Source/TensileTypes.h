@@ -182,12 +182,37 @@ constexpr __host__ __device__ bool operator==(tensile_complex<T> const& a,
 {
     return (a.x == b.x) && (a.y == b.y);
 }
+template <typename T>
+constexpr __host__ __device__ bool operator!=(tensile_complex<T> const& a,
+                                              tensile_complex<T> const& b)
+{
+    return (a.x != b.x) || (a.y != b.y);
+}
 
 using tensile_float_complex  = tensile_complex<float>;
 using tensile_double_complex = tensile_complex<double>;
 
 #define TensileComplexFloat tensile_float_complex
 #define TensileComplexDouble tensile_double_complex
+
+template <typename t>
+struct tensile_complex2
+{
+    tensile_complex<t> x;
+    tensile_complex<t> y;
+
+    __host__ __device__ tensile_complex2() = default;
+
+    constexpr __host__ __device__ tensile_complex2(tensile_complex<t> x, tensile_complex<t> y)
+        : x{x}
+        , y{y}
+    {
+    }
+};
+
+using tensile_float_complex2 = tensile_complex2<float>;
+
+#define TensileComplexFloat2 tensile_float_complex2
 #endif // HIP
 
 #define TensileInt8x4 uint32_t
@@ -697,35 +722,6 @@ struct ProblemProperties
               && ((this->_allBatchAStridesAreZero) >= solutionRequirements._allBatchAStridesAreZero)
               && ((this->_allBatchBStridesAreZero)
                   >= solutionRequirements._allBatchBStridesAreZero);
-
-#if 0
-      if(this->_db & 0x10)
-      {
-          if(!rv)
-          {
-#define check_print(name, oper)                                                                \
-    if(!(this->name oper solutionRequirements.name))                                           \
-    {                                                                                          \
-        std::cout << #name << "failed: !(" << this->name << #oper << solutionRequirements.name \
-                  << ")" << std::endl;                                                         \
-    }
-
-              std::cout << "Assertion failed:" << std::endl;
-              check_print(_summationElementMultiple, >=);
-              check_print(_free0ElementMultiple, >=);
-              check_print(_free1ElementMultiple, >=);
-              check_print(_approxSize, >=);
-              check_print(_equalStrides, ==);
-              check_print(_allBatchAStridesAreZero, >=);
-              check_print(_allBatchBStridesAreZero, >=);
-#undef check_print
-          }
-          else
-          {
-              std::cout << "Satisfied asserts!" << std::endl;
-          }
-      }
-#endif
 
         return rv;
     }

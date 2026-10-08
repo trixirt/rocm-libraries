@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,14 +26,19 @@
 
 #pragma once
 
-#include <ck/utility/data_type.hpp>
-#include <ck/utility/tuple.hpp>
-#include <hiptensor/hiptensor.h>
-#include <hiptensor/internal/types.hpp>
-#include <logger.hpp>
+#include <algorithm>
 #include <numeric>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
+
+#include <ck/utility/data_type.hpp>
+#include <ck/utility/tuple.hpp>
+
+#include "data_types.hpp"
+#include "hiptensor/internal/types.hpp"
+#include "logger.hpp"
+#include "platform.hpp"
 
 namespace hiptensor
 {
@@ -121,6 +126,34 @@ namespace hiptensor
         return indices;
     }
 
+    // Reorders `strides`, which are given in `modes` order, into `refModes` order, so that
+    // entry i of the result is the stride of the mode `refModes[i]`. This lets a set of
+    // tensors whose modes are ordered differently be indexed against one common iteration
+    // space. A mode of `refModes` that `modes` does not carry gets stride 0, so that every
+    // index along that mode maps to the same element and the tensor is broadcast along it.
+    // An empty return means `modes` and `strides` disagree in length, which the caller must
+    // treat as an unsupported layout.
+    template <typename T>
+    std::vector<T> alignStridesToModes(std::vector<int32_t> const& refModes,
+                                       std::vector<int32_t> const& modes,
+                                       std::vector<T> const&       strides)
+    {
+        if(modes.size() != strides.size())
+        {
+            return {};
+        }
+
+        std::vector<T> aligned;
+        aligned.reserve(refModes.size());
+        for(auto mode : refModes)
+        {
+            auto it = std::find(modes.cbegin(), modes.cend(), mode);
+            aligned.push_back(it == modes.cend() ? T{0}
+                                                 : strides[std::distance(modes.cbegin(), it)]);
+        }
+        return aligned;
+    }
+
     inline void printErrorMessage(hiptensor::Logger& logger,
                                   hiptensorStatus_t  errorCode,
                                   const std::string& paramName)
@@ -133,6 +166,27 @@ namespace hiptensor
                  hiptensorGetErrorString(errorCode));
         logger.logError("hiptensorPermute", msg);
     };
+
+    // Read and environment variable and check if it's value evaluates to true or false.
+    // "ON", "on" and "1" evaluates to true, any other value or the absense of the value
+    // evaluates to false.
+    inline bool checkEnvironmentVariableEnabled(const char* name)
+    {
+        auto var = getEnvironmentVariable(name);
+        if(!var.has_value())
+        {
+            return false;
+        }
+
+        std::string upper = var.value();
+        std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+        if((upper.compare("ON") == 0) || (upper.compare("1") == 0))
+        {
+            return true;
+        }
+
+        return false;
+    }
 
     /** @name static_for
      *  @{
@@ -154,6 +208,74 @@ namespace hiptensor
     void convertVectorToCkArray(std::vector<T> const& v, std::array<U, N>& a)
     {
         std::copy_n(v.begin(), N, a.begin());
+    }
+
+    template <typename T>
+    hiptensorStatus_t getSortingIndices(const T*          referenceOrder,
+                                        size_t            referenceSize,
+                                        const T*          elementsToSort,
+                                        size_t            elementsSize,
+                                        std::vector<int>& sortingIndices)
+    {
+        // Create a position map for elements in the reference order
+        std::unordered_map<T, int> elementPosition;
+        for(size_t i = 0; i < referenceSize; ++i)
+        {
+            elementPosition[referenceOrder[i]] = static_cast<int>(i);
+        }
+
+        // Verify all elements in elementsToSort exist in referenceOrder
+        for(size_t i = 0; i < elementsSize; ++i)
+        {
+            if(elementPosition.find(elementsToSort[i]) == elementPosition.end())
+            {
+                return HIPTENSOR_STATUS_INVALID_VALUE;
+            }
+        }
+
+        // Resize the output vector to match input size
+        sortingIndices.resize(elementsSize);
+
+        // Create indices vector [0, 1, 2, ..., elementsSize-1]
+        std::iota(sortingIndices.begin(), sortingIndices.end(), 0);
+
+        // Sort indices based on the order of corresponding elements in referenceOrder
+        std::sort(sortingIndices.begin(),
+                  sortingIndices.end(),
+                  [elementsToSort, &elementPosition](int i, int j) {
+                      return elementPosition[elementsToSort[i]]
+                             < elementPosition[elementsToSort[j]];
+                  });
+
+        return HIPTENSOR_STATUS_SUCCESS;
+    }
+
+    template <typename T>
+    hiptensorStatus_t applySortingIndices(const std::vector<int>& sortingIndices,
+                                          std::vector<T>&         vector)
+    {
+        // Check if sizes match
+        if(sortingIndices.size() != vector.size())
+        {
+            return HIPTENSOR_STATUS_INVALID_VALUE;
+        }
+
+        // Resize output vector
+        std::vector<T> sortedVector = std::vector<T>(vector.size());
+
+        // Apply sorting indices
+        for(size_t i = 0; i < sortingIndices.size(); ++i)
+        {
+            auto index = sortingIndices[i];
+            if(index < 0 || index >= static_cast<int>(vector.size()))
+            {
+                return HIPTENSOR_STATUS_INVALID_VALUE;
+            }
+            sortedVector[i] = vector[index];
+        }
+        vector = sortedVector;
+
+        return HIPTENSOR_STATUS_SUCCESS;
     }
 
     /** @name CK type tuple to hiptensor type tuple transform functions
@@ -198,6 +320,15 @@ namespace hiptensor
     {                                                             \
         printErrorMessage(logger, errorCode, #paramName);         \
         checkResult = errorCode;                                  \
+    }
+
+// A rank-0 tensor carries no modes, so a null mode array is only an error when its
+// descriptor declares at least one. `descName` must already be known to be non-null.
+#define CheckApiModes(checkResult, logger, errorCode, descName, modeName) \
+    if(!descName->mLengths.empty() && !modeName)                          \
+    {                                                                     \
+        printErrorMessage(logger, errorCode, #modeName);                  \
+        checkResult = errorCode;                                          \
     }
 
 } // namespace hiptensor

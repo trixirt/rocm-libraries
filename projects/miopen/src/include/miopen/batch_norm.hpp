@@ -29,12 +29,11 @@
 #include <miopen/common.hpp>
 #include <miopen/miopen.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #define MIO_BN_CPP_PROF 0
-#define MIOPEN_BN_CPP_DEBUG 0
-#define MIO_BN_STATIC_WGSIZE 256
 #define MIO_BN_TIME_EVERYTHING 0
 
 namespace miopen {
@@ -49,118 +48,6 @@ MIOPEN_INTERNALS_EXPORT void DeriveBNTensorDescriptor(TensorDescriptor& derivedB
 
 MIOPEN_INTERNALS_EXPORT TensorDescriptor
 BuildReshaped4DTensorDescriptor(const miopen::TensorDescriptor& tDesc);
-
-void bnBwdTrainSelectSingle(const Handle& handle,
-                            miopenDataType_t dtype,
-                            const std::string& program_name,
-                            const std::string& algo_name,
-                            const std::string& kernel_name,
-                            const std::string& network_config,
-                            const std::string& parms,
-                            const std::vector<size_t>& vld,
-                            const std::vector<size_t>& vgd,
-                            ConstData_t x,
-                            ConstData_t dy,
-                            Data_t dx,
-                            ConstData_t bnScale,
-                            Data_t dScale,
-                            Data_t dBias,
-                            bool useSaved,
-                            double epsilon,
-                            ConstData_t savedMean,
-                            ConstData_t savedInvVariance,
-                            float inhw);
-
-void bnFwdTrainSelectSingleFull(const Handle& handle,
-                                int variant,
-                                miopenDataType_t dtype,
-                                const std::string& algo_name,
-                                const std::string& network_config,
-                                ConstData_t x,
-                                Data_t y,
-                                ConstData_t bnScale,
-                                ConstData_t bnBias,
-                                bool resultsave,
-                                bool resultrunning,
-                                double expAvgFactor,
-                                Data_t resultRunningMean,
-                                Data_t resultRunningVariance,
-                                double epsilon,
-                                Data_t resultSaveMean,
-                                Data_t resultSaveInvVariance,
-                                float inhw,
-                                unsigned int in_cstride,
-                                unsigned int in_nstride);
-
-void bnBwdTrainSelectMulti(const Handle& handle,
-                           miopenDataType_t dtype,
-                           const std::string& program_name,
-                           const std::string& algo_name,
-                           const std::string& kernel_name,
-                           const std::string& network_config,
-                           const std::string& parms,
-                           const std::vector<size_t>& vld,
-                           const std::vector<size_t>& vgd,
-                           ConstData_t x,
-                           ConstData_t dy,
-                           Data_t dx,
-                           ConstData_t bnScale,
-                           Data_t dScale,
-                           Data_t dBias,
-                           bool useSaved,
-                           double epsilon,
-                           ConstData_t savedMean,
-                           ConstData_t savedInvVariance,
-                           float inhw);
-
-void bnFwdTrainSelectSingleEmpty(const Handle& handle,
-                                 int variant,
-                                 miopenDataType_t dtype,
-                                 const std::string& program_name,
-                                 const std::string& algo_name,
-                                 const std::string& kernel_name,
-                                 const std::string& network_config,
-                                 const std::string& parms,
-                                 const std::vector<size_t>& vld,
-                                 const std::vector<size_t>& vgd,
-                                 ConstData_t x,
-                                 Data_t y,
-                                 ConstData_t bnScale,
-                                 ConstData_t bnBias,
-                                 bool resultsave,
-                                 bool resultrunning,
-                                 double expAvgFactor,
-                                 Data_t resultRunningMean,
-                                 Data_t resultRunningVariance,
-                                 double epsilon,
-                                 Data_t resultSaveMean,
-                                 Data_t resultSaveInvVariance,
-                                 float inhw,
-                                 unsigned int in_cstride,
-                                 unsigned int in_nstride);
-
-void bnFwdTrainSelectMulti(const Handle& handle,
-                           miopenDataType_t dtype,
-                           const std::string& program_name,
-                           const std::string& algo_name,
-                           const std::string& kernel_name,
-                           const std::string& network_config,
-                           const std::string& parms,
-                           const std::vector<size_t>& vld,
-                           const std::vector<size_t>& vgd,
-                           ConstData_t x,
-                           Data_t y,
-                           ConstData_t bnScale,
-                           ConstData_t bnBias,
-                           bool resultsave,
-                           bool resultrunning,
-                           double expAvgFactor,
-                           Data_t resultRunningMean,
-                           Data_t resultRunningVariance,
-                           double epsilon,
-                           Data_t resultSaveMean,
-                           Data_t resultSaveInvVariance,
-                           float inhw);
 
 void profileSequence(const Handle& handle, unsigned char select, float* ctime);
 
@@ -180,7 +67,7 @@ MIOPEN_INTERNALS_EXPORT void BatchNormForwardInference(const Handle& handle,
                                                        ConstData_t bnBias,
                                                        ConstData_t estimatedMean,
                                                        ConstData_t estimatedVariance,
-                                                       double epsilon,
+                                                       std::optional<double> epsilonOpt,
                                                        const ActivationDescriptor& activDesc);
 
 MIOPEN_INTERNALS_EXPORT void BatchNormForwardTraining(const Handle& handle,
@@ -200,6 +87,30 @@ MIOPEN_INTERNALS_EXPORT void BatchNormForwardTraining(const Handle& handle,
                                                       double expAvgFactor,
                                                       Data_t resultRunningMean,
                                                       Data_t resultRunningVariance,
+                                                      double epsilon,
+                                                      Data_t resultSaveMean,
+                                                      Data_t resultSaveInvVariance,
+                                                      const ActivationDescriptor& activDesc);
+
+MIOPEN_INTERNALS_EXPORT void BatchNormForwardTraining(const Handle& handle,
+                                                      miopenBatchNormMode_t bn_mode,
+                                                      const void* alpha,
+                                                      const void* beta,
+                                                      const TensorDescriptor& xDesc,
+                                                      ConstData_t x,
+                                                      const TensorDescriptor& yDesc,
+                                                      Data_t y,
+                                                      const TensorDescriptor& scaleDesc,
+                                                      const TensorDescriptor& biasDesc,
+                                                      const TensorDescriptor& savedMeanDesc,
+                                                      const TensorDescriptor& savedVarianceDesc,
+                                                      ConstData_t bnScale,
+                                                      ConstData_t bnBias,
+                                                      double expAvgFactor,
+                                                      ConstData_t prevResultRunningMean,
+                                                      ConstData_t prevResultRunningVariance,
+                                                      Data_t nextResultRunningMean,
+                                                      Data_t nextResultRunningVariance,
                                                       double epsilon,
                                                       Data_t resultSaveMean,
                                                       Data_t resultSaveInvVariance,

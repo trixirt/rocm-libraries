@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2025, Advanced Micro Devices, Inc. All rights reserved.
 
 #pragma once
 
@@ -28,7 +28,11 @@ template <BlockGemmPipelineVersion BlkGemmPipelineVer,
           index_t MRepeat,
           index_t NRepeat,
           index_t KPack,
-          bool TransposeC = false>
+          index_t KInner,
+          bool TransposeC       = false,
+          bool BSkipLDS         = false,
+          bool UseLdsTransposeA = false,
+          bool UseLdsTransposeB = false>
 constexpr auto BlockGemmPipeline_Selector()
 {
     if constexpr(BlkGemmPipelineVer == BlockGemmPipelineVersion::v1)
@@ -52,7 +56,11 @@ constexpr auto BlockGemmPipeline_Selector()
                                                 MRepeat,
                                                 NRepeat,
                                                 KPack,
-                                                TransposeC>{};
+                                                KInner,
+                                                TransposeC,
+                                                BSkipLDS,
+                                                UseLdsTransposeA,
+                                                UseLdsTransposeB>{};
     }
     else if constexpr(BlkGemmPipelineVer == BlockGemmPipelineVersion::v3)
     {
@@ -75,7 +83,11 @@ constexpr auto BlockGemmPipeline_Selector()
                                                 MRepeat,
                                                 NRepeat,
                                                 KPack,
-                                                TransposeC>{};
+                                                KInner,
+                                                TransposeC,
+                                                BSkipLDS,
+                                                UseLdsTransposeA,
+                                                UseLdsTransposeB>{};
     }
     else
     {

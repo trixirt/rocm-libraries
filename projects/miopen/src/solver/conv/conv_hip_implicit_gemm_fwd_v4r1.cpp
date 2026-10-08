@@ -55,8 +55,6 @@ bool ConvHipImplicitGemmV4R1Fwd::IsApplicable(const ExecutionContext& ctx,
     // Missing instruction: v_mac_f32
     if(problem.IsFp32() && static_ck::GfxHasMissingFp32Intrinsics(name))
         return false;
-    if(problem.GetConv().attribute.deterministic)
-        return false;
     if(!problem.IsDirectionForward())
         return false;
     if(!ctx.use_hip_kernels)
@@ -122,6 +120,8 @@ bool ConvHipImplicitGemmV4R1WrW::IsApplicable(const ExecutionContext& ctx,
     if(!static_ck::IsIndexRangeLargeEnough(problem))
         return false;
     if(!problem.IsLayoutDefault())
+        return false;
+    if(problem.HasNonPackedTensors())
         return false;
     if(name == "gfx90a" && problem.IsGfx90aFp16altRequired())
         return false;

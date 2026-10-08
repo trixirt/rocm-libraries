@@ -47,6 +47,12 @@ typedef void* hipblasLtHandle_t;
 // forcing early cleanup
 extern "C" ROCBLAS_EXPORT void rocblas_shutdown();
 
+// Whether rocBLAS can reallocate device memory on demand, at the cost of only
+// allowing one allocation at a time, and at the cost of potential synchronization.
+// If this is 0, then stack-like allocation is allowed, but reallocation on demand
+// does not occur.
+#define ROCBLAS_REALLOC_ON_DEMAND 1
+
 // Round up size to the nearest MIN_CHUNK_SIZE
 constexpr size_t roundup_device_memory_size(size_t size)
 {
@@ -63,6 +69,7 @@ struct rocblas_device_malloc_base
 enum class rocblas_device_memory_ownership
 {
     rocblas_managed,
+    user_managed,
     user_owned,
 };
 
@@ -72,6 +79,7 @@ enum class Processor : int
     // only including supported types
     gfx803  = 803,
     gfx900  = 900,
+    gfx90c  = 912,
     gfx906  = 906,
     gfx908  = 908,
     gfx90a  = 910,
@@ -83,16 +91,21 @@ enum class Processor : int
     gfx1030 = 1030,
     gfx1031 = 1031,
     gfx1032 = 1032,
+    gfx1033 = 1033,
     gfx1034 = 1034,
     gfx1035 = 1035,
+    gfx1036 = 1036,
     gfx1100 = 1100,
     gfx1101 = 1101,
     gfx1102 = 1102,
     gfx1103 = 1103,
     gfx1150 = 1150,
     gfx1151 = 1151,
+    gfx1152 = 1152,
+    gfx1153 = 1153,
     gfx1200 = 1200,
-    gfx1201 = 1201
+    gfx1201 = 1201,
+    gfx1250 = 1250
 };
 
 // helper function in handle.cpp
@@ -140,16 +153,20 @@ private:
             : device_id(device_id)
             , old_device_id(-1)
         {
-            hipGetDevice(&old_device_id);
+            THROW_IF_HIP_ERROR(hipGetDevice(&old_device_id));
             if(device_id != old_device_id)
-                hipSetDevice(device_id);
+            {
+                THROW_IF_HIP_ERROR(hipSetDevice(device_id));
+            }
         }
 
         // Old device ID is restored on destruction
         ~_rocblas_saved_device_id()
         {
             if(device_id != old_device_id)
-                hipSetDevice(old_device_id);
+            {
+                (void)(hipSetDevice(old_device_id));
+            }
         }
 
         // Move constructor
@@ -259,7 +276,18 @@ public:
 
     bool isYZGridDim16bit()
     {
-        return archMajor == 12;
+        static bool expectedYZGrid = [&] {
+            if(device_properties.maxGridSize[1] < c_YZ_grid_launch_limit
+               || device_properties.maxGridSize[2] < c_YZ_grid_launch_limit)
+            {
+                rocblas_cerr << "rocBLAS error: maxGridSize Y or Z smaller than known hardware. "
+                                "If larger problems return error code try ILP64 APIs."
+                             << std::endl;
+                return false;
+            }
+            return true;
+        }();
+        return true;
     }
 
     int getBatchGridDim(int batch_count)
@@ -277,7 +305,7 @@ public:
     bool isDefaultHipBLASLtArch()
     {
         int gfx_arch = getArch();
-        if(gfx_arch == 1200 || gfx_arch == 1201 || gfx_arch == 950)
+        if(gfx_arch == 1200 || gfx_arch == 1201 || gfx_arch == 1250 || gfx_arch == 950)
         {
             return true;
         }
@@ -395,6 +423,10 @@ public:
     // default atomics mode does not allows atomic operations
     rocblas_atomics_mode atomics_mode = rocblas_atomics_not_allowed;
 
+    // optional stride between successive alpha/beta values for advanced batched use; 0 is default
+    rocblas_stride stride_alpha = 0;
+    rocblas_stride stride_beta  = 0;
+
     // Selects the benchmark library to be used for solution selection
     rocblas_performance_metric performance_metric = rocblas_default_performance_metric;
 
@@ -423,13 +455,35 @@ public:
         this->data_ptr = data_ptr;
     }
 
+    rocblas_stride get_stride_alpha() const
+    {
+        // only applicable to device mode alpha, load_scalar ignores for value
+        return stride_alpha;
+    }
+    void set_stride_alpha(rocblas_stride stride)
+    {
+        stride_alpha = stride;
+    }
+
+    rocblas_stride get_stride_beta() const
+    {
+        // only applicable to device mode beta, load_scalar ignores for value
+        return stride_beta;
+    }
+    void set_stride_beta(rocblas_stride stride)
+    {
+        stride_beta = stride;
+    }
+
     // C interfaces for manipulating device memory
     friend rocblas_status(::rocblas_start_device_memory_size_query)(_rocblas_handle*);
     friend rocblas_status(::rocblas_stop_device_memory_size_query)(_rocblas_handle*, size_t*);
     friend rocblas_status(::rocblas_get_device_memory_size)(_rocblas_handle*, size_t*);
+    friend rocblas_status(::rocblas_set_device_memory_size)(_rocblas_handle*, size_t);
     friend rocblas_status(::free_existing_device_memory)(rocblas_handle);
     friend rocblas_status(::rocblas_set_workspace)(_rocblas_handle*, void*, size_t);
     friend bool(::rocblas_is_managing_device_memory)(_rocblas_handle*);
+    friend bool(::rocblas_is_user_managing_device_memory)(_rocblas_handle*);
     friend rocblas_status(::rocblas_set_stream)(_rocblas_handle*, hipStream_t);
 
     // C interfaces that interact with the solution selection process
@@ -542,9 +596,8 @@ private:
     size_t                          device_memory_in_use       = 0;
     bool                            device_memory_size_query   = false;
     bool                            alpha_beta_memcpy_complete = false;
-    rocblas_device_memory_ownership device_memory_owner
-        = rocblas_device_memory_ownership::rocblas_managed;
-    size_t device_memory_query_size;
+    rocblas_device_memory_ownership device_memory_owner;
+    size_t                          device_memory_query_size;
 
     bool stream_order_alloc = false;
 
@@ -553,6 +606,13 @@ private:
 
     // rocblas by default take the system default stream 0 users cannot create
     hipStream_t stream = 0;
+
+    rocblas_status set_stream(hipStream_t new_stream);
+
+#if ROCBLAS_REALLOC_ON_DEMAND
+    // Helper for device memory allocator
+    bool ROCBLAS_EXPORT device_allocator(size_t size);
+#endif
 
 public:
     hipDeviceProp_t device_properties;
@@ -604,13 +664,16 @@ private:
             const size_t offsets[] = {(old = size, size += roundup_device_memory_size(sizes), old)...};
             char* addr = nullptr;
 
-            if( handle->device_memory_owner == rocblas_device_memory_ownership::rocblas_managed)
+            if(handle->stream_order_alloc &&
+                handle->device_memory_owner == rocblas_device_memory_ownership::rocblas_managed)
             {
+// hipMallocAsync and hipFreeAsync are defined in hip version 5.2.0
+// Support for default stream added in hip version 5.3.0
+#if HIP_VERSION >= 50300000
                 if(!size)
                     return decltype(pointers)(sizeof...(sizes));
 
                 hipError_t hipStatus = hipMallocAsync(&dev_mem, size, stream_in_use);
-
                 if(hipStatus != hipSuccess)
                 {
                     success = false;
@@ -618,11 +681,15 @@ private:
                     return decltype(pointers)(sizeof...(sizes));
                 }
                 addr = static_cast<char*>(dev_mem);
+#endif
             }
-            else if (handle->device_memory_owner == rocblas_device_memory_ownership::user_owned)
+            else
             {
+#if ROCBLAS_REALLOC_ON_DEMAND
+                success = handle->device_allocator(size);
+#else
                 success = size <= handle->device_memory_size - handle->device_memory_in_use;
-
+#endif
                 // If allocation failed, return an array of nullptr's
                 // If total size is 0, return an array of nullptr's, but leave it marked as successful
                 if(!success || !size)
@@ -632,7 +699,6 @@ private:
                 addr = static_cast<char*>(handle->device_memory) + handle->device_memory_in_use;
                 handle->device_memory_in_use += size;
             }
-
             // An array of pointers to all of the allocated arrays is formed.
             // If a size is 0, the corresponding pointer is nullptr
             size_t i = 0;
@@ -662,26 +728,33 @@ private:
             , stream_in_use(handle->stream)
             , success(true)
         {
-            if( handle->device_memory_owner == rocblas_device_memory_ownership::rocblas_managed)
+            if(handle->stream_order_alloc &&
+                handle->device_memory_owner == rocblas_device_memory_ownership::rocblas_managed)
             {
+// hipMallocAsync and hipFreeAsync are defined in hip version 5.2.0
+// Support for default stream added in hip version 5.3.0
+#if HIP_VERSION >= 50300000
                 bool status = hipMallocAsync(&dev_mem, size, stream_in_use) == hipSuccess ;
 
                 for(auto i= 0 ; i < count ; i++)
                     pointers.push_back(status ? dev_mem : nullptr);
+#endif
             }
-             else if (handle->device_memory_owner == rocblas_device_memory_ownership::user_owned)
+            else
             {
-
-                success = size <= handle->device_memory_size - handle->device_memory_in_use;
-                for(auto i= 0 ; i < count ; i++)
-                {    pointers.push_back(success ? static_cast<char*>(handle->device_memory)
-                                            + handle->device_memory_in_use : nullptr);
-                }
-
-                if(success)
-                    handle->device_memory_in_use += size;
+#if ROCBLAS_REALLOC_ON_DEMAND
+            success = handle->device_allocator(size);
+#else
+            success = size <= handle->device_memory_size - handle->device_memory_in_use;
+#endif
+            for(auto i= 0 ; i < count ; i++)
+            {    pointers.push_back(success ? static_cast<char*>(handle->device_memory)
+                                         + handle->device_memory_in_use : nullptr);
             }
 
+            if(success)
+                handle->device_memory_in_use += size;
+            }
         }
 
         // Move constructor
@@ -721,10 +794,15 @@ private:
             // If success == false or size == 0, the destructor is a no-op
             if(success && size)
             {
-                if( handle->device_memory_owner == rocblas_device_memory_ownership::rocblas_managed)
+                if(handle->stream_order_alloc &&
+                    handle->device_memory_owner == rocblas_device_memory_ownership::rocblas_managed)
                 {
+// hipMallocAsync and hipFreeAsync are defined in hip version 5.2.0
+// Support for default stream added in hip version 5.3.0
+#if HIP_VERSION >= 50300000
                         if(dev_mem)
                         {
+
                             bool status = hipFreeAsync(dev_mem, stream_in_use) == hipSuccess ;
                             if(!status)
                             {
@@ -734,9 +812,9 @@ private:
                             }
                             dev_mem = nullptr;
                         }
-
+#endif
                 }
-                else if (handle->device_memory_owner == rocblas_device_memory_ownership::user_owned)
+                else
                 {
                     // Subtract size from the handle's device_memory_in_use, making sure
                     // it matches the device_memory_in_use when this object was created.
@@ -754,7 +832,6 @@ private:
                         rocblas_abort();
                     }
                 }
-
 
                 handle->gsu_workspace_size = 0;
                 handle->gsu_workspace      = nullptr;

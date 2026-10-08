@@ -225,7 +225,7 @@ the ``hipStreamSynchronize(old_stream)`` API before setting the new stream.
 
 .. code-block:: cpp
 
-    // Synchronize the old stream (optional)
+    // Synchronize the old stream
     if(hipStreamSynchronize(old_stream) != hipSuccess) return EXIT_FAILURE;
 
     // Create a new stream (this step can be done before the steps above)
@@ -237,8 +237,8 @@ the ``hipStreamSynchronize(old_stream)`` API before setting the new stream.
     // Destroy the old stream (this step is optional but must come after synchronization)
     if(hipStreamDestroy(old_stream) != hipSuccess) return EXIT_FAILURE;
 
-The call to ``hipStreamSynchronize`` above is necessary for the ``user_owned`` allocation scheme because the ``rocBLAS_handle`` contains allocated device
-memory provided by the user that must not be shared by multiple asynchronous streams at the same time.
+The call to ``hipStreamSynchronize`` above is necessary because the ``rocBLAS_handle`` contains allocated device
+memory that must not be shared by multiple asynchronous streams at the same time.
 
 If either the old or new stream is the default or ``NULL`` stream, it is not necessary to
 synchronize the old stream before destroying it, or before setting the new stream,
@@ -246,8 +246,8 @@ because the synchronization is implicit.
 
 .. note::
 
-   You can switch from one non-default stream to another without calling ``hipStreamSynchronize()`` as the default memory allocation scheme (``rocBLAS_managed``) uses stream order allocation.
-   For more information, see :ref:`Device Memory Allocation Usage`.
+   You can switch from one non-default stream to another without calling ``hipStreamSynchronize()`` by enabling stream-order memory allocation.
+   For more information, see :ref:`stream order alloc`.
 
 Creating the handle incurs a startup cost. There is an additional startup cost for
 GEMM functions to load GEMM kernels for a specific device. You can shift the
@@ -994,12 +994,15 @@ After the build, the rocBLAS clients can be found in the ``rocBLAS/build/release
 
 .. note::
 
-   The ``rocblas-bench`` and ``rocblas-test`` executables use AMD's ILP64 version of AOCL-BLAS 4.2 as the host
-   reference BLAS to verify correctness. However, there is a known issue with multiple threads
-   in AOCL-BLAS that can cause these executables to hang.
+   The ``rocblas-bench`` and ``rocblas-test`` executables use AMD's AOCL-BLAS library with ILP64 support
+   (64-bit integers) as the host reference BLAS to verify correctness. On Linux, ``install.sh -dc`` automatically
+   builds AOCL 5.2 from source. On Windows, AOCL 4.2+ can be manually installed from
+   `AMD Developer Central <https://www.amd.com/en/developer/aocl.html>`_.
+
+   There is a known issue with thread oversubscription in AOCL-BLAS that can cause these executables to hang.
    If the number of threads matches the total number of CPU threads, thread oversubscription can occur, which causes the process to hang.
 
-   To prevent this issue, the number of threads used the AOCL-BLAS library should be smaller than the number of available CPU cores.
+   To prevent this issue, the number of threads used by the AOCL-BLAS library should be smaller than the number of available CPU cores.
    You can configure this setting using the ``OMP_NUM_THREADS`` environment variable.
    For example, on a server with 32 cores, limit the number of threads to 28 by setting ``export OMP_NUM_THREADS=28``.
 
@@ -1461,6 +1464,12 @@ For example, the performance of SGEMM using rocblas-bench on an AMD vega20 machi
    transA,transB,M,N,K,alpha,lda,ldb,beta,ldc,rocblas-Gflops,us
    N,N,4096,4096,4096,1,4096,4096,0,4096,11941.5,11509.4
 
+Logging affects performance, so only use it to log the command under evaluation,
+then run the command without logging to measure performance.
+
+Use of logging to advise on rocblas-bench arguments
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
 A useful way of finding the parameters that can be used with ``./rocblas-bench -f gemm`` is to turn on logging
 by setting the environment variable ``ROCBLAS_LAYER=2``. For example, if the user runs:
 
@@ -1480,15 +1489,18 @@ The user can copy and change the above command. For example, to change the datat
 
    ./rocblas-bench -f gemm -r f64_r --transposeA N --transposeB N -m 2048 -n 2048 -k 2048 --alpha 1 --lda 2048 --ldb 2048 --beta 0 --ldc 2048
 
+
+Benchmarking ILP64 APIs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
 To measure performance on the ILP64 API functions, when they exist, add the argument ``--api 1`` rather
 than changing the function name set in ``-f``.
-Logging affects performance, so only use it to log the command under evaluation,
-then run the command without logging to measure performance.
 
 
 .. note::
 
-   rocblas-bench also has the flag ``-v 1`` for correctness checks.
+   rocblas-bench has the flag ``-v 1`` for norm based correctness checks against CPU reference.
+   rocblas-bench has the flag ``-t 1`` for equality and tolerance based correctness checks against CPU reference.
 
 Benchmarking special case gemv_batched and gemv_strided_batched functions using rocblas-bench
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1534,23 +1546,37 @@ Here is an example input file:
     - {'rocblas_function': 'gemm_ex', 'transA': 'N', 'transB': 'N', 'M': 320, 'N': 588, 'K': 4096, 'alpha': 1, 'a_type': 'f32_r', 'lda': 320, 'b_type': 'f32_r', 'ldb': 6144, 'beta': 0, 'c_type': 'f32_r', 'ldc': 320, 'd_type': 'f32_r', 'ldd': 320, 'compute_type': 'f32_r', 'device': 0}
     - {'rocblas_function': 'gemm_ex', 'transA': 'N', 'transB': 'N', 'M': 512, 'N': 3096, 'K': 512, 'alpha': 1, 'a_type': 'f16_r', 'lda': 512, 'b_type': 'f16_r', 'ldb': 512, 'beta': 0, 'c_type': 'f16_r', 'ldc': 512, 'd_type': 'f16_r', 'ldd': 512, 'compute_type': 'f32_r', 'device': 0}
 
-The expected output looks like this (the selected GEMM idx might differ):
+The expected output looks like this (the selected solution index will differ):
 
 .. code-block:: bash
 
     transA,transB,M,N,batch_count,K,alpha,beta,lda,ldb,ldc,input_type,output_type,compute_type,solution_index
-    N,N,320,588,1,4096,1,0,320,6144,320,f32_r,f32_r,f32_r,3788
-    N,N,512,3096,1,512,1,0,512,512,512,f16_r,f16_r,f32_r,4546
+    N,N,320,588,1,4096,1,0,320,6144,320,f32_r,f32_r,f32_r,-3798
+    N,N,512,3096,1,512,1,0,512,512,512,f16_r,f16_r,f32_r,-4556
 
 Where the far right values (``solution_index``) are the indices of the best performing kernels for those GEMMs in the rocBLAS kernel library.
 These indices can be used directly in future GEMM calls but cannot be reused across library
-releases or different device architectures.
+releases, different device architectures, or across different GEMM backends.
+
+The values are the same indices that ``rocblas_gemm_ex_get_solutions`` reports, so they can be
+passed straight to ``rocblas_gemm_ex`` with ``rocblas_gemm_algo_solution_index`` for both Tensile and hipBLASLt backends.
+Solutions provided by the legacy Tensile backend are reported as negative indices (with bias), while positive indices
+belong to the hipBLASLt backend. A problem is left out of the output when its fastest kernel comes from
+neither backend, as is the case when the internal GEMV kernel wins a problem with ``M`` or ``N`` equal to one.
+Such a kernel has no index a later call can name, and rocBLAS already selects it by its own heuristics.
 
 See `example_user_driven_tuning.cpp <https://github.com/ROCm/rocm-libraries/blob/develop/projects/rocblas/clients/samples/example_user_driven_tuning.cpp>`_ for
 sample code showing how to use kernels directly via their indices.
 
 If the output is stored in a file, you can use the results to override the default kernel selection
 by setting the environment variable ``ROCBLAS_TENSILE_GEMM_OVERRIDE_PATH=<path>``, where ``<path>`` points to the file.
+Because the overrides are applied to the Tensile backend only, an entry whose ``solution_index`` names no
+Tensile solution is skipped with a warning while the remaining entries are still applied. A load failure is
+reported only when a file leaves no override in place. Positive indices in an override file are still
+interpreted as raw one-based Tensile indices for compatibility with files generated by earlier releases
+or manually get remapped back to Tensile indices. To see which entries were applied, set the environment variable ``TENSILE_DB=0x40000``.
+Setting ``ROCBLAS_USE_HIPBLASLT=1`` forces the hipBLASLt backend which does not use this override file. 
+The override file is similarly bypassed on architectures where hipBLASLt is the default backend.
 
 
 rocblas-test
@@ -1624,6 +1650,10 @@ The following test situations require additional consideration:
 
       ROCBLAS_CLIENT_RAM_GB_LIMIT=32 ./rocblas-test --gtest_filter=*stress*
 
+   If the ``rocblas-test`` process is being killed due to an out of memory (OOM) condition, then reduce the client limit by half
+   and try again.  It is not advisable to run any stress tests if you have less than 8 GB VRAM available to your graphics device.
+   Use the test subtraction syntax if combining with other filters, for example, ``-*stress*``.
+
 *  Long-running tests
 
    The rocblas-test process will be terminated if a single test takes longer than the configured timeout.
@@ -1642,6 +1672,13 @@ The following test situations require additional consideration:
    .. code-block:: bash
 
       ROCBLAS_TEST_NO_SIGACTION=1 rocgdb ./rocblas-test --gtest_filter=*stress*
+
+   On Linux the rocblas-test process now aborts when catching signals to log a stack dump. To disable this feature,
+   set the environment variable ``ROCBLAS_TEST_CONTINUE_ON_FATAL_SIGNAL``:
+
+   .. code-block:: bash
+
+      ROCBLAS_TEST_CONTINUE_ON_FATAL_SIGNAL=1 ./rocblas-test --gtest_filter=*stress*
 
 
 Adding a new rocBLAS unit test

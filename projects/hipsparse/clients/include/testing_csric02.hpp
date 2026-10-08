@@ -1,5 +1,5 @@
 /* ************************************************************************
- * Copyright (C) 2020 Advanced Micro Devices, Inc. All rights Reserved.
+ * Copyright (C) 2020-2026 Advanced Micro Devices, Inc. All rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -37,12 +37,13 @@
 #include <cmath>
 #include <hipsparse.h>
 #include <string>
+#include <type_traits>
 
 using namespace hipsparse;
 using namespace hipsparse_test;
 
 template <typename T>
-void testing_csric02_bad_arg(void)
+void testing_csric02_bad_arg(const Arguments& argus)
 {
 #if(!defined(CUDART_VERSION))
     int                    m         = 100;
@@ -157,7 +158,7 @@ void testing_csric02_bad_arg(void)
 }
 
 template <typename T>
-hipsparseStatus_t testing_csric02(Arguments argus)
+void testing_csric02(Arguments argus)
 {
 #if(!defined(CUDART_VERSION) || CUDART_VERSION < 13000)
     int                    m        = argus.M;
@@ -177,14 +178,6 @@ hipsparseStatus_t testing_csric02(Arguments argus)
     // Set matrix index base
     CHECK_HIPSPARSE_ERROR(hipsparseSetMatIndexBase(descr, idx_base));
 
-    if(m == 0)
-    {
-#ifdef __HIP_PLATFORM_NVIDIA__
-        // cusparse only accepts m > 1
-        return HIPSPARSE_STATUS_SUCCESS;
-#endif
-    }
-
     srand(12345ULL);
 
     // Host structures
@@ -194,11 +187,8 @@ hipsparseStatus_t testing_csric02(Arguments argus)
 
     // Read or construct CSR matrix
     int nnz = 0;
-    if(!generate_csr_matrix(filename, m, m, nnz, hcsr_row_ptr, hcsr_col_ind, hcsr_val, idx_base))
-    {
-        fprintf(stderr, "Cannot open [read] %s\ncol", filename.c_str());
-        return HIPSPARSE_STATUS_INTERNAL_ERROR;
-    }
+    CHECK_GENERATE_MATRIX_ERROR(
+        generate_csr_matrix(filename, m, m, nnz, hcsr_row_ptr, hcsr_col_ind, hcsr_val, idx_base));
 
     std::vector<T> hcsr_val_orig(hcsr_val);
 
@@ -330,8 +320,13 @@ hipsparseStatus_t testing_csric02(Arguments argus)
 
         if(h_analysis_pivot_gold == -1 && h_solve_pivot_gold == -1)
         {
-            unit_check_near(1, nnz, 1, hcsr_val.data(), result_1.data());
-            unit_check_near(1, nnz, 1, hcsr_val.data(), result_2.data());
+            // Relax the double-precision relative tolerance (default 1e-10) for gfx1250.
+            const double rtol
+                = (std::is_same<T, double>::value || std::is_same<T, hipDoubleComplex>::value)
+                      ? 2e-10
+                      : -1.0;
+            unit_check_near(1, nnz, 1, hcsr_val.data(), result_1.data(), rtol);
+            unit_check_near(1, nnz, 1, hcsr_val.data(), result_2.data(), rtol);
         }
     }
 
@@ -383,8 +378,6 @@ hipsparseStatus_t testing_csric02(Arguments argus)
                             get_gpu_time_msec(gpu_time_used));
     }
 #endif
-
-    return HIPSPARSE_STATUS_SUCCESS;
 }
 
 #endif // TESTING_CSRIC0_HPP

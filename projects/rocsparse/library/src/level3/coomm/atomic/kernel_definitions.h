@@ -1,6 +1,6 @@
 /*! \file */
 /* ************************************************************************
-* Copyright (C) 2021-2025 Advanced Micro Devices, Inc. All rights Reserved.
+* Copyright (C) 2021-2026 Advanced Micro Devices, Inc. All rights Reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a copy
 * of this software and associated documentation files (the "Software"), to deal
@@ -41,7 +41,9 @@ namespace rocsparse
                                  bool    conj_B,
                                  I       ncol,
                                  int64_t nnz,
+                                 I       m,
                                  I       n,
+                                 int64_t batch_count,
                                  int64_t batch_stride_A,
                                  ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),
                                  const I* __restrict__ coo_row_ind,
@@ -61,22 +63,26 @@ namespace rocsparse
         ROCSPARSE_DEVICE_HOST_SCALAR_GET(alpha);
         if(alpha != static_cast<T>(0))
         {
-            rocsparse::coommnn_atomic_main_device<BLOCKSIZE, WF_SIZE, LOOPS, TRANSB>(
-                conj_A,
-                conj_B,
-                ncol,
-                nnz,
-                n,
-                alpha,
-                load_pointer(coo_row_ind, hipBlockIdx_y, batch_stride_A),
-                load_pointer(coo_col_ind, hipBlockIdx_y, batch_stride_A),
-                load_pointer(coo_val, hipBlockIdx_y, batch_stride_A),
-                load_pointer(dense_B, hipBlockIdx_y, batch_stride_B),
-                ldb,
-                load_pointer(dense_C, hipBlockIdx_y, batch_stride_C),
-                ldc,
-                order_C,
-                idx_base);
+            for(int64_t batch = hipBlockIdx_y; batch < batch_count; batch += hipGridDim_y)
+            {
+                rocsparse::coommnn_atomic_main_device<BLOCKSIZE, WF_SIZE, LOOPS, TRANSB>(
+                    conj_A,
+                    conj_B,
+                    ncol,
+                    nnz,
+                    m,
+                    n,
+                    alpha,
+                    load_pointer(coo_row_ind, batch, batch_stride_A),
+                    load_pointer(coo_col_ind, batch, batch_stride_A),
+                    load_pointer(coo_val, batch, batch_stride_A),
+                    load_pointer(dense_B, batch, batch_stride_B),
+                    ldb,
+                    load_pointer(dense_C, batch, batch_stride_C),
+                    ldc,
+                    order_C,
+                    idx_base);
+            }
         }
     }
 
@@ -92,8 +98,10 @@ namespace rocsparse
         void coommnn_atomic_remainder(bool    conj_A,
                                       bool    conj_B,
                                       I       ncol_offset,
+                                      I       m,
                                       I       n,
                                       int64_t nnz,
+                                      int64_t batch_count,
                                       int64_t batch_stride_A,
                                       ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),
                                       const I* __restrict__ coo_row_ind,
@@ -112,22 +120,26 @@ namespace rocsparse
         ROCSPARSE_DEVICE_HOST_SCALAR_GET(alpha);
         if(alpha != static_cast<T>(0))
         {
-            rocsparse::coommnn_atomic_remainder_device<BLOCKSIZE, WF_SIZE, TRANSB>(
-                conj_A,
-                conj_B,
-                ncol_offset,
-                n,
-                nnz,
-                alpha,
-                load_pointer(coo_row_ind, hipBlockIdx_y, batch_stride_A),
-                load_pointer(coo_col_ind, hipBlockIdx_y, batch_stride_A),
-                load_pointer(coo_val, hipBlockIdx_y, batch_stride_A),
-                load_pointer(dense_B, hipBlockIdx_y, batch_stride_B),
-                ldb,
-                load_pointer(dense_C, hipBlockIdx_y, batch_stride_C),
-                ldc,
-                order_C,
-                idx_base);
+            for(int64_t batch = hipBlockIdx_y; batch < batch_count; batch += hipGridDim_y)
+            {
+                rocsparse::coommnn_atomic_remainder_device<BLOCKSIZE, WF_SIZE, TRANSB>(
+                    conj_A,
+                    conj_B,
+                    ncol_offset,
+                    m,
+                    n,
+                    nnz,
+                    alpha,
+                    load_pointer(coo_row_ind, batch, batch_stride_A),
+                    load_pointer(coo_col_ind, batch, batch_stride_A),
+                    load_pointer(coo_val, batch, batch_stride_A),
+                    load_pointer(dense_B, batch, batch_stride_B),
+                    ldb,
+                    load_pointer(dense_C, batch, batch_stride_C),
+                    ldc,
+                    order_C,
+                    idx_base);
+            }
         }
     }
 
@@ -142,7 +154,9 @@ namespace rocsparse
         void coommtn_atomic_main(bool    conj_A,
                                  bool    conj_B,
                                  int64_t nnz,
+                                 I       m,
                                  I       n,
+                                 int64_t batch_count,
                                  int64_t batch_stride_A,
                                  ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),
                                  const I* __restrict__ coo_row_ind,
@@ -161,21 +175,25 @@ namespace rocsparse
         ROCSPARSE_DEVICE_HOST_SCALAR_GET(alpha);
         if(alpha != static_cast<T>(0))
         {
-            rocsparse::coommtn_atomic_device<BLOCKSIZE, TRANSB>(
-                conj_A,
-                conj_B,
-                nnz,
-                n,
-                alpha,
-                load_pointer(coo_row_ind, hipBlockIdx_z, batch_stride_A),
-                load_pointer(coo_col_ind, hipBlockIdx_z, batch_stride_A),
-                load_pointer(coo_val, hipBlockIdx_z, batch_stride_A),
-                load_pointer(dense_B, hipBlockIdx_z, batch_stride_B),
-                ldb,
-                load_pointer(dense_C, hipBlockIdx_z, batch_stride_C),
-                ldc,
-                order_C,
-                idx_base);
+            for(int64_t batch = hipBlockIdx_z; batch < batch_count; batch += hipGridDim_z)
+            {
+                rocsparse::coommtn_atomic_device<BLOCKSIZE, TRANSB>(
+                    conj_A,
+                    conj_B,
+                    nnz,
+                    m,
+                    n,
+                    alpha,
+                    load_pointer(coo_row_ind, batch, batch_stride_A),
+                    load_pointer(coo_col_ind, batch, batch_stride_A),
+                    load_pointer(coo_val, batch, batch_stride_A),
+                    load_pointer(dense_B, batch, batch_stride_B),
+                    ldb,
+                    load_pointer(dense_C, batch, batch_stride_C),
+                    ldc,
+                    order_C,
+                    idx_base);
+            }
         }
     }
 }
@@ -187,7 +205,9 @@ namespace rocsparse
             bool    conj_B,                                                         \
             I       ncol,                                                           \
             int64_t nnz,                                                            \
+            I       m,                                                              \
             I       n,                                                              \
+            int64_t batch_count,                                                    \
             int64_t batch_stride_A,                                                 \
             ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),                          \
             const I* __restrict__ coo_row_ind,                                      \
@@ -209,8 +229,10 @@ namespace rocsparse
             bool    conj_A,                                                       \
             bool    conj_B,                                                       \
             I       ncol_offset,                                                  \
+            I       m,                                                            \
             I       n,                                                            \
             int64_t nnz,                                                          \
+            int64_t batch_count,                                                  \
             int64_t batch_stride_A,                                               \
             ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),                        \
             const I* __restrict__ coo_row_ind,                                    \
@@ -232,7 +254,9 @@ namespace rocsparse
             bool    conj_A,                                          \
             bool    conj_B,                                          \
             int64_t nnz,                                             \
+            I       m,                                               \
             I       n,                                               \
+            int64_t batch_count,                                     \
             int64_t batch_stride_A,                                  \
             ROCSPARSE_DEVICE_HOST_SCALAR_PARAMS(T, alpha),           \
             const I* __restrict__ coo_row_ind,                       \

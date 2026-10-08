@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -43,8 +43,14 @@ namespace hiptensor
                                            std::vector<hiptensorOperator_t> const&  operators,
                                            ElementwiseExecutionSpaceType_t instanceType) const
     {
-        int nDims = lengths.size();
-        // TODO Only handle all input tensors have the same modes here. Need to handle cases when they are not.
+        // The output carries every mode of the operation, so it defines the index space the
+        // kernels walk and therefore the instance's rank. An input may carry fewer modes and is
+        // broadcast along the ones it lacks, so its own rank cannot be used here.
+        int nDims = outModesArray[0].size();
+
+        // Positions in the first input of each output mode. Modes that the input does not carry
+        // are absent, which leaves `outputDims` shorter than `nDims` and tells selectInstanceParams
+        // that this is a broadcast it has no tuning data for.
         auto outputDims = hiptensor::findIndices(inModesArray[0], outModesArray[0]);
 
         // TODO Only handle A, B have the same types here. Need to handle A, B are different types
@@ -66,8 +72,8 @@ namespace hiptensor
                               operators.cend(),
                               [](auto v) { return v == HIPTENSOR_OP_IDENTITY; })
                && instanceType == ElementwiseExecutionSpaceType_t::DEVICE);
-        auto scale = usePassThroughIfAlphaIsOne ? hiptensor::PermutationOpId_t::PASS_THROUGH
-                                                : hiptensor::PermutationOpId_t::SCALE;
+        auto scale     = usePassThroughIfAlphaIsOne ? hiptensor::PermutationOpId_t::PASS_THROUGH
+                                                    : hiptensor::PermutationOpId_t::SCALE;
         auto hashCodes = ck::tensor_operation::device::instance::getHashCodeOfBestPerfInstances(
             inDataTypes, outDataTypes, scale, nDims, instanceParams);
 

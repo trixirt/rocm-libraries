@@ -1,5 +1,5 @@
+// Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2025, Advanced Micro Devices, Inc. All rights reserved.
 
 #include <hip/hip_runtime.h>
 
@@ -17,7 +17,7 @@
 template <template <typename PrecType> typename ConvConfig>
 int run_grouped_conv_bwd_weight_example(ck_tile::ArgParser& arg_parser)
 {
-    using Invoker = GroupedConvolutionBackwardWeightInvoker;
+    using Invoker = GroupedConvolutionBackwardWeightInvoker<>;
 
     std::string data_type  = arg_parser.get_str("prec");
     std::string in_layout  = arg_parser.get_str("in_layout");
